@@ -1,0 +1,17 @@
+[Unit]
+Description=UNS Infisical token rotator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=uns
+Group=uns
+EnvironmentFile=/etc/uns/infisical-rotator.env
+ExecStartPre=/usr/bin/install -d -m 700 -o uns -g uns /var/lib/uns/secrets
+ExecStart=/usr/local/bin/infisical-rotator --secrets-dir /var/lib/uns/secrets
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

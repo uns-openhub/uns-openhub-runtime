@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+case "$0" in
+  */*) bin_dir=${0%/*} ;;
+  *) bin_dir=. ;;
+esac
+
+os=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+case "$os" in
+  darwin*) goos=darwin ;;
+  linux*) goos=linux ;;
+  mingw*|msys*|cygwin*) goos=windows ;;
+  *)
+    echo "Unsupported OS: $os" >&2
+    exit 2
+    ;;
+esac
+
+case "$arch" in
+  x86_64|amd64) goarch=amd64 ;;
+  arm64|aarch64) goarch=arm64 ;;
+  *)
+    echo "Unsupported architecture: $arch" >&2
+    exit 2
+    ;;
+esac
+
+exe="$bin_dir/infisical-rotator-$goos-$goarch"
+if [ "$goos" = "windows" ]; then
+  exe="$exe.exe"
+fi
+
+if [ ! -x "$exe" ]; then
+  echo "Missing executable: $exe" >&2
+  exit 2
+fi
+
+exec "$exe" "$@"

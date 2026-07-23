@@ -1,0 +1,93 @@
+{
+  "uns": {
+    "graphql": "http://uns-datahub-controller:3200/graphql",
+    "rest": "http://uns-datahub-controller:3200/api",
+    "env": "prod",
+    "processName": "controller"
+  },
+
+  "infra": {
+    "host": "mosquitto"
+  },
+
+  "pg": {
+    "user": "uns",
+    "host": "postgres",
+    "port": 5432,
+    "database": "uns",
+    "isPoolConnection": false,
+    "searchTextConfig": "public.uns_slovenian",
+    "password": {
+      "key": "POSTGRES_PASSWORD",
+      "provider": "env"
+    },
+    "ssl": false
+  },
+
+  "azure": {
+    "azureClientId": {"key": "AZURE_CLIENT_ID", "provider": "env", "default": ""},
+    "azureClientSecret": {"key": "AZURE_CLIENT_SECRET", "provider": "env", "default": ""},
+    "azureScope": {"key": "AZURE_SCOPE", "provider": "env", "default": ""},
+    "azureTenantId": {"key": "AZURE_TENANT_ID", "provider": "env", "default": ""}
+  },
+
+  "server": {
+    "apiEndpoint": "/api",
+    "docsEndpoint": "/docs",
+    "graphqlEndpoint": "/graphql",
+    "ip": "uns-datahub-controller",
+    "port": 3200,
+    "cluster": true,
+    "infisicalSecretCacheEnabled": true,
+    "infisicalTokenReloadSeconds": 86400,
+    "clusterTimings": {
+      "masterHeartbeatMs": 1000,
+      "masterStaleThresholdMs": 25000,
+      "electionTimeoutMs": 6000,
+      "initialHeartbeatWaitMs": 3000,
+      "electionScoreIntervalMs": 7000
+    }
+  },
+
+  "frontend": {
+    "url": "http://uns-datahub-controller:3200/"
+  },
+
+  "unsApiGlobal": {
+    "baseUrl": "http://caddy:8180",
+    "apiBasePath": "/api/catchall",
+    "swaggerPath": "/uns-api-global/general-api/catchall-swagger.json"
+  },
+
+  "llm": {
+    "apiKey": {"key": "OPENAI_KEY", "provider": "env", "default": ""},
+    "model": "gpt-4o",
+    "provider": "openai"
+  },
+
+  "caddy": {
+    "adminUrl": "http://caddy:2019/",
+    "proxyHost": "http://caddy:8180",
+    "serverName": "default",
+    "listen": [
+      ":8180"
+    ],
+    "adminListen": ":2019",
+    "allowedOrigins": [
+      "http://localhost:8180",
+      "http://localhost:3200",
+      "http://localhost:4200"
+    ],
+    "baseConfig": {
+      "apps": {
+        "http": {
+          "servers": {
+            "default": {
+              "routes": []
+            }
+          }
+        }
+      }
+    }
+  }
+}
