@@ -45,6 +45,29 @@ Use `--scope user` only for a deliberately rootless deployment. Do not mix
 rootful and rootless Podman for the same installation because they use
 different container, image, network, and volume stores.
 
+## macOS with Podman Machine
+
+macOS does not provide systemd, so it cannot install Quadlet units directly.
+For local Podman development, enter the Linux Podman machine and install the
+units in its rootless user scope:
+
+```sh
+podman machine ssh
+cd /absolute/path/to/uns-datahub-runtime
+./bin/uns quadlet install \
+  --runtime-dir "$PWD" \
+  --scope user \
+  --mode both
+```
+
+Then execute the `systemctl --user` commands printed by the installer. The
+runtime checkout must be visible at the same absolute path inside the machine.
+Docker on macOS continues to use Docker Compose.
+
+The units are stored inside the Podman machine. Removing or recreating that
+machine removes the installed units, but does not alter the runtime checkout
+on the macOS host.
+
 ## Generated Units
 
 The renderer creates:

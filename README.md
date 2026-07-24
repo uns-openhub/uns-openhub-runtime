@@ -180,6 +180,11 @@ a deliberately rootless deployment.
 images, or starts containers. Stop the old deployment and verify its volume
 mapping before executing the printed `systemctl enable --now` command.
 
+On macOS, run the install command inside `podman machine ssh` with
+`--scope user`; macOS itself has no systemd. See
+`docs/podman-quadlet.md` for the complete local workflow. Docker on macOS
+continues to use Docker Compose.
+
 ## Docker Compose: Start Infra Only
 
 Use this when you only need local Postgres, Mosquitto, Caddy, and QuestDB.
