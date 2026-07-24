@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+Environment=UNS_CONTROLLER_REPOSITORY=uns-datahub-controller
 EnvironmentFile=/etc/uns/controller.env
 ExecStart=/usr/bin/podman run --replace --name uns-controller --detach \
   -p 3200:3200 \
@@ -16,7 +17,7 @@ ExecStart=/usr/bin/podman run --replace --name uns-controller --detach \
   --secret infisical_project_id,type=mount \
   --secret infisical_site_url,type=mount \
   --env-file /etc/uns/controller.env \
-  ${UNS_REGISTRY}/${UNS_REPO_PREFIX}/uns-datahub-controller:${UNS_TAG}
+  ${UNS_REGISTRY}/${UNS_REPO_PREFIX}/${UNS_CONTROLLER_REPOSITORY}:${UNS_TAG}
 ExecStop=/usr/bin/podman stop uns-controller
 ExecStopPost=/usr/bin/podman rm uns-controller
 

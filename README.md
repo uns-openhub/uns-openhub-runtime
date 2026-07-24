@@ -40,11 +40,32 @@ cp .env.example .env
 2. Edit `.env` and set at least:
 
 ```env
-UNS_REGISTRY=fra.ocir.io
-UNS_REPO_PREFIX=fricdwfcid28
+UNS_REGISTRY=docker.io
+UNS_REPO_PREFIX=unsdatahub
+UNS_CONTROLLER_REPOSITORY=uns-datahub-controller
+UNS_POSTGRES_REPOSITORY=uns-postgres
 UNS_TAG=latest
 CONFIG_FILE=config-example.json
 ```
+
+These defaults resolve to:
+
+```text
+docker.io/unsdatahub/uns-datahub-controller:<version-or-latest>
+docker.io/unsdatahub/uns-postgres:<version-or-latest>
+```
+
+Authenticate each host before pulling the private controller image:
+
+```sh
+podman login -u unsdatahub docker.io
+```
+
+Use `docker login` instead when running Docker. The Postgres repository is
+public and does not require authentication. If an existing `.env` still has
+`UNS_IMAGE_REPOSITORY`, replace it with `UNS_CONTROLLER_REPOSITORY` and
+`UNS_POSTGRES_REPOSITORY` as shown above. The Compose files retain safe
+defaults so regeneration does not overwrite the preserved `.env`.
 
 3. For local runs without Infisical, keep `CONFIG_FILE=config-example.json`.
    This config reads optional Azure and OpenAI values from `.env`:
@@ -221,28 +242,14 @@ Reconfigure the runtime:
 ./bin/uns init -i
 ```
 
-Show or reopen the controller first-setup wizard:
+Review a generated release and print the safe image/commit/tag sequence:
 
 ```sh
-./bin/uns controller setup status
-./bin/uns controller setup reset
+./scripts/release-checklist.sh
 ```
 
-The reset command only marks setup as required again. It does not delete
-database data, admin users, or signing keys.
-
-Stop only the controller process while keeping the controller container and
-existing RTT PM2 apps running:
-
-```sh
-./bin/uns controller stop
-./bin/uns controller status
-./bin/uns controller start
-```
-
-While the controller is stopped, the UI/API and controller-managed deployment
-actions are unavailable. Existing PM2 apps can keep running. The stop is not
-persistent across a container restart.
+The checklist is read-only. It never stages, commits, tags, pushes, or
+publishes images.
 
 Update the controller code in the running controller container. The runtime
 repository is the update channel: `git pull` downloads new compiled JavaScript
@@ -261,8 +268,15 @@ You can also use a specific version or an explicit artifact:
 
 ```sh
 ./bin/uns controller update --tag 7.1.22
-./bin/uns controller update --artifact artifacts/controller-runtime/controller-runtime-<version>.tar.gz
+./bin/uns controller update \
+  --artifact artifacts/controller-runtime/controller-runtime-<version>.tar.gz \
+  --checksum artifacts/controller-runtime/controller-runtime-<version>.tar.gz.sha256
 ```
+
+`uns controller refresh` is a compatibility alias for this artifact-based
+update. It no longer clones or builds the controller source in the running
+container. Keep the previous versioned artifact and checksum for offline
+rollback.
 
 The CLI also has a convenience flag:
 

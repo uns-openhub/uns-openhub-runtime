@@ -22,4 +22,9 @@ for suffix in manifest.json tar.gz tar.gz.sha256; do
   }
 done
 
+[[ -f "artifacts/controller-runtime/controller-runtime-latest.tar.gz.sha256" ]] || {
+  echo "Missing latest runtime checksum." >&2
+  exit 1
+}
+
 echo "Release tag '$tag' matches runtime bundle '$version'."

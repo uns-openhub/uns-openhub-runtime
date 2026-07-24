@@ -37,7 +37,43 @@ fi
 }
 
 cmp "$versioned_artifact" "$latest_artifact"
-bash -n bin/uns bin/infisical-rotator
+
+allowed_artifacts="
+controller-runtime-${version}.manifest.json
+controller-runtime-${version}.tar.gz
+controller-runtime-${version}.tar.gz.sha256
+controller-runtime-latest.tar.gz
+controller-runtime-latest.tar.gz.sha256
+"
+while IFS= read -r artifact_path; do
+  artifact_name="$(basename "$artifact_path")"
+  if ! printf '%s' "$allowed_artifacts" | grep -Fxq "$artifact_name"; then
+    echo "Unexpected stale controller runtime artifact: $artifact_path" >&2
+    exit 1
+  fi
+done < <(find "$artifact_dir" -maxdepth 1 -type f -name 'controller-runtime-*' -print)
+
+grep -Fx 'UNS_REGISTRY=docker.io' .env.example
+grep -Fx 'UNS_REPO_PREFIX=unsdatahub' .env.example
+grep -Fx 'UNS_CONTROLLER_REPOSITORY=uns-datahub-controller' .env.example
+grep -Fx 'UNS_POSTGRES_REPOSITORY=uns-postgres' .env.example
+grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsdatahub}/${UNS_CONTROLLER_REPOSITORY:-uns-datahub-controller}:${UNS_TAG:-latest}' \
+  docker-compose.controller.yml docker-compose.yml
+grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsdatahub}/${UNS_POSTGRES_REPOSITORY:-uns-postgres}:${UNS_TAG:-latest}' \
+  docker-compose.infra.yml docker-compose.yml
+
+if grep -R -E 'fra\.ocir\.io|fricdwfcid28' \
+  -- .env.example docker-compose.controller.yml docker-compose.infra.yml docker-compose.yml; then
+  echo "Generated runtime still contains an OCIR-specific default." >&2
+  exit 1
+fi
+
+bash -n bin/uns bin/infisical-rotator scripts/release-checklist.sh
+
+[[ -x scripts/release-checklist.sh ]] || {
+  echo "Runtime release checklist is not executable." >&2
+  exit 1
+}
 
 for file in \
   bin/uns-linux-amd64 \

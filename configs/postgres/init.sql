@@ -512,7 +512,8 @@ CREATE INDEX IF NOT EXISTS idx_auth_role_scopes_scope
 INSERT INTO public.auth_scopes(scope)
 VALUES
   ('read:uns'),
-  ('export:uns-reference')
+  ('export:uns-reference'),
+  ('export:uns-reference:all')
 ON CONFLICT (scope) DO NOTHING;
 
 INSERT INTO public.auth_role_scopes(role, scope)
@@ -1898,84 +1899,201 @@ ALTER TABLE public."chat_tool_policy_overrides"
 CREATE INDEX IF NOT EXISTS idx_chat_tool_policy_overrides_updated_at
   ON public."chat_tool_policy_overrides" ("updatedAt" DESC);
 
-CREATE TABLE IF NOT EXISTS public."chat_runtime_policy_overrides" (
-  "scope" text PRIMARY KEY,
-  "deterministicIntentsEnabled" boolean NULL,
-  "routePlannerEnabled" boolean NULL,
-  "routePlannerProfile" text NULL,
-  "routePlannerProvider" text NULL,
-  "routePlannerModel" text NULL,
-  "routePlannerBaseUrl" text NULL,
-  "artifactViewProfile" text NULL,
-  "artifactViewProvider" text NULL,
-  "artifactViewModel" text NULL,
-  "artifactViewBaseUrl" text NULL,
-  "defaultExecutionPolicy" text NULL,
-  "allowStructuredToolFastPath" boolean NULL,
-  "allowAttributeDisambiguationFallback" boolean NULL,
-  "allowDirectValueRoute" boolean NULL,
-  "allowDirectUnitConversionRoute" boolean NULL,
-  "allowDirectLlmArtifactRoute" boolean NULL,
-  "allowDirectLlmChartArtifactRoute" boolean NULL,
-  "allowDirectStructuredRoute" boolean NULL,
-  "allowDirectCompareRoute" boolean NULL,
-  "allowDirectDerivedRoute" boolean NULL,
-  "allowDirectDisambiguationRoute" boolean NULL,
-  "updatedBy" text NULL,
-  "updatedAt" timestamptz NOT NULL DEFAULT now()
+-- === ASSISTANT WORKFLOW DEFINITION CANDIDATES ===============================
+-- Append-only review evidence. Activation is intentionally stored elsewhere;
+-- a candidate row must never become mutable runtime state.
+CREATE TABLE IF NOT EXISTS public."assistant_workflow_definition_candidates" (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "workflowId" text NOT NULL,
+  "workflowVersion" integer NOT NULL CHECK ("workflowVersion" > 0),
+  "artifactChecksum" text NOT NULL,
+  "reviewChecksum" text NOT NULL,
+  "candidateArtifact" jsonb NOT NULL,
+  "reviewArtifact" jsonb NOT NULL,
+  "reviewStatus" text NOT NULL CHECK ("reviewStatus" IN ('ready', 'warning', 'blocked')),
+  "reviewedAgainstWorkflowId" text NOT NULL,
+  "reviewedAgainstWorkflowVersion" integer NOT NULL CHECK ("reviewedAgainstWorkflowVersion" > 0),
+  "createdBy" text NULL,
+  "createdAt" timestamptz NOT NULL DEFAULT now(),
+  UNIQUE ("workflowId", "workflowVersion", "artifactChecksum")
 );
 
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "scope" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "deterministicIntentsEnabled" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "routePlannerEnabled" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "routePlannerProfile" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "routePlannerProvider" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "routePlannerModel" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "routePlannerBaseUrl" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "artifactViewProfile" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "artifactViewProvider" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "artifactViewModel" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "artifactViewBaseUrl" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "defaultExecutionPolicy" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowStructuredToolFastPath" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowAttributeDisambiguationFallback" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowDirectValueRoute" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowDirectUnitConversionRoute" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowDirectLlmArtifactRoute" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowDirectLlmChartArtifactRoute" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowDirectStructuredRoute" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowDirectCompareRoute" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowDirectDerivedRoute" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "allowDirectDisambiguationRoute" boolean;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "updatedBy" text;
-ALTER TABLE public."chat_runtime_policy_overrides"
-  ADD COLUMN IF NOT EXISTS "updatedAt" timestamptz NOT NULL DEFAULT now();
+CREATE INDEX IF NOT EXISTS idx_assistant_workflow_candidates_history
+  ON public."assistant_workflow_definition_candidates"
+  ("workflowId", "workflowVersion" DESC, "createdAt" DESC);
 
-CREATE INDEX IF NOT EXISTS idx_chat_runtime_policy_overrides_updated_at
-  ON public."chat_runtime_policy_overrides" ("updatedAt" DESC);
+CREATE INDEX IF NOT EXISTS idx_assistant_workflow_candidates_status_created_at
+  ON public."assistant_workflow_definition_candidates"
+  ("reviewStatus", "createdAt" DESC);
+
+CREATE OR REPLACE FUNCTION public.reject_assistant_workflow_candidate_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'assistant workflow definition candidates are immutable'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_assistant_workflow_candidate_immutable
+  ON public."assistant_workflow_definition_candidates";
+CREATE TRIGGER trg_assistant_workflow_candidate_immutable
+  BEFORE UPDATE OR DELETE ON public."assistant_workflow_definition_candidates"
+  FOR EACH ROW EXECUTE FUNCTION public.reject_assistant_workflow_candidate_mutation();
+
+-- Approval is a separate append-only decision record. It does not activate the
+-- candidate or mutate the reviewed artifact.
+CREATE TABLE IF NOT EXISTS public."assistant_workflow_definition_candidate_approvals" (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "candidateId" uuid NOT NULL REFERENCES public."assistant_workflow_definition_candidates" (id),
+  "workflowId" text NOT NULL,
+  "workflowVersion" integer NOT NULL CHECK ("workflowVersion" > 0),
+  "artifactChecksum" text NOT NULL,
+  "reviewChecksum" text NOT NULL,
+  "approvalChecksum" text NOT NULL,
+  "approvalArtifact" jsonb NOT NULL,
+  "approvedAgainstWorkflowId" text NOT NULL,
+  "approvedAgainstWorkflowVersion" integer NOT NULL CHECK ("approvedAgainstWorkflowVersion" > 0),
+  "approvedBy" text NOT NULL,
+  "approvalNote" text NULL,
+  "createdAt" timestamptz NOT NULL DEFAULT now(),
+  UNIQUE ("candidateId")
+);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_workflow_candidate_approvals_history
+  ON public."assistant_workflow_definition_candidate_approvals"
+  ("workflowId", "workflowVersion" DESC, "createdAt" DESC);
+
+CREATE OR REPLACE FUNCTION public.reject_assistant_workflow_candidate_approval_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'assistant workflow definition candidate approvals are immutable'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_assistant_workflow_candidate_approval_immutable
+  ON public."assistant_workflow_definition_candidate_approvals";
+CREATE TRIGGER trg_assistant_workflow_candidate_approval_immutable
+  BEFORE UPDATE OR DELETE ON public."assistant_workflow_definition_candidate_approvals"
+  FOR EACH ROW EXECUTE FUNCTION public.reject_assistant_workflow_candidate_approval_mutation();
+
+CREATE TABLE IF NOT EXISTS public."assistant_workflow_definition_activations" (
+  id uuid PRIMARY KEY,
+  "workflowId" text NOT NULL,
+  "workflowVersion" integer NOT NULL CHECK ("workflowVersion" > 0),
+  "candidateId" uuid NOT NULL REFERENCES public."assistant_workflow_definition_candidates" (id),
+  "approvalId" uuid NOT NULL REFERENCES public."assistant_workflow_definition_candidate_approvals" (id),
+  "artifactChecksum" text NOT NULL,
+  "reviewChecksum" text NOT NULL,
+  "approvalChecksum" text NOT NULL,
+  "runtimeDeliveryChecksum" text NOT NULL,
+  "runtimeInstanceId" text NOT NULL,
+  "activatedBy" text NOT NULL,
+  "activatedAt" timestamptz NOT NULL
+);
+
+DO $$
+DECLARE
+  legacy_constraint_name text;
+BEGIN
+  FOR legacy_constraint_name IN
+    SELECT constraint_row.conname
+    FROM pg_constraint constraint_row
+    WHERE constraint_row.conrelid = 'public.assistant_workflow_definition_activations'::regclass
+      AND constraint_row.contype = 'u'
+      AND (
+        SELECT array_agg(attribute_row.attname::text ORDER BY key_column.ordinality)
+        FROM unnest(constraint_row.conkey) WITH ORDINALITY AS key_column(attnum, ordinality)
+        JOIN pg_attribute attribute_row
+          ON attribute_row.attrelid = constraint_row.conrelid
+         AND attribute_row.attnum = key_column.attnum
+      ) IN (
+        ARRAY['approvalId']::text[],
+        ARRAY['workflowId', 'workflowVersion']::text[]
+      )
+  LOOP
+    EXECUTE format(
+      'ALTER TABLE public."assistant_workflow_definition_activations" DROP CONSTRAINT %I',
+      legacy_constraint_name
+    );
+  END LOOP;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_assistant_workflow_activations_history
+  ON public."assistant_workflow_definition_activations"
+  ("workflowId", "workflowVersion" DESC, "activatedAt" DESC);
+
+CREATE OR REPLACE FUNCTION public.reject_assistant_workflow_activation_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'assistant workflow definition activations are immutable'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_assistant_workflow_activation_immutable
+  ON public."assistant_workflow_definition_activations";
+CREATE TRIGGER trg_assistant_workflow_activation_immutable
+  BEFORE UPDATE OR DELETE ON public."assistant_workflow_definition_activations"
+  FOR EACH ROW EXECUTE FUNCTION public.reject_assistant_workflow_activation_mutation();
+
+CREATE TABLE IF NOT EXISTS public."assistant_workflow_definition_active" (
+  "workflowId" text PRIMARY KEY,
+  "workflowVersion" integer NOT NULL CHECK ("workflowVersion" > 0),
+  "candidateId" uuid NOT NULL REFERENCES public."assistant_workflow_definition_candidates" (id),
+  "approvalId" uuid NOT NULL UNIQUE REFERENCES public."assistant_workflow_definition_candidate_approvals" (id),
+  "activationId" uuid NOT NULL UNIQUE REFERENCES public."assistant_workflow_definition_activations" (id)
+    DEFERRABLE INITIALLY DEFERRED,
+  "artifactChecksum" text NOT NULL,
+  "reviewChecksum" text NOT NULL,
+  "approvalChecksum" text NOT NULL,
+  "runtimeDeliveryChecksum" text NOT NULL,
+  "runtimeInstanceId" text NOT NULL,
+  "activatedBy" text NOT NULL,
+  "activatedAt" timestamptz NOT NULL
+);
+
+-- Restoring the configured TypeScript definition removes the persisted active
+-- pointer and records immutable evidence in the same transaction.
+CREATE TABLE IF NOT EXISTS public."assistant_workflow_definition_configured_restores" (
+  id uuid PRIMARY KEY,
+  "workflowId" text NOT NULL,
+  "workflowVersion" integer NOT NULL CHECK ("workflowVersion" > 0),
+  "previousActivationId" uuid NOT NULL REFERENCES public."assistant_workflow_definition_activations" (id),
+  "previousWorkflowVersion" integer NOT NULL CHECK ("previousWorkflowVersion" > 0),
+  "runtimeDeliveryChecksum" text NOT NULL,
+  "runtimeInstanceId" text NOT NULL,
+  "restoredBy" text NOT NULL,
+  "restoredAt" timestamptz NOT NULL,
+  UNIQUE ("previousActivationId")
+);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_workflow_configured_restores_history
+  ON public."assistant_workflow_definition_configured_restores"
+  ("workflowId", "restoredAt" DESC);
+
+CREATE OR REPLACE FUNCTION public.reject_assistant_workflow_configured_restore_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'assistant workflow definition configured restores are immutable'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_assistant_workflow_configured_restore_immutable
+  ON public."assistant_workflow_definition_configured_restores";
+CREATE TRIGGER trg_assistant_workflow_configured_restore_immutable
+  BEFORE UPDATE OR DELETE ON public."assistant_workflow_definition_configured_restores"
+  FOR EACH ROW EXECUTE FUNCTION public.reject_assistant_workflow_configured_restore_mutation();
 
 CREATE TABLE IF NOT EXISTS public."schema_runtime_settings" (
   "scope" text PRIMARY KEY,
@@ -2033,6 +2151,47 @@ ALTER TABLE public."addon_ui_preferences"
 CREATE INDEX IF NOT EXISTS idx_addon_ui_preferences_nav_order
   ON public."addon_ui_preferences" ("navOrder" ASC, "addonId" ASC);
 
+CREATE TABLE IF NOT EXISTS public."assistant_suggested_prompts" (
+  id text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  icon text NULL,
+  messages jsonb NOT NULL,
+  enabled boolean NOT NULL DEFAULT true,
+  "sortOrder" integer NOT NULL DEFAULT 0,
+  "createdAt" timestamptz NOT NULL DEFAULT now(),
+  "updatedAt" timestamptz NOT NULL DEFAULT now(),
+  "updatedBy" text NULL,
+  CONSTRAINT assistant_suggested_prompts_messages_array_chk
+    CHECK (jsonb_typeof(messages) = 'array')
+);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_suggested_prompts_visible_order
+  ON public."assistant_suggested_prompts" (enabled, "sortOrder" ASC, id ASC);
+
+CREATE TABLE IF NOT EXISTS public."assistant_suggested_prompt_state" (
+  scope text PRIMARY KEY,
+  "defaultsSeededAt" timestamptz NOT NULL DEFAULT now()
+);
+
+WITH claimed AS (
+  INSERT INTO public."assistant_suggested_prompt_state" (scope)
+  VALUES ('defaults')
+  ON CONFLICT (scope) DO NOTHING
+  RETURNING scope
+)
+INSERT INTO public."assistant_suggested_prompts" (id, icon, messages, enabled, "sortOrder")
+SELECT defaults.id, defaults.icon, defaults.messages, defaults.enabled, defaults."sortOrder"
+FROM (
+  VALUES
+    ('assistant-prompt-zone-1-chart', 'show_chart', '[{"lang":"en","text":"Show furnace zone 1 temperature for the last hour as a chart."}]'::jsonb, true, 10),
+    ('assistant-prompt-zone-temperature-comparison', 'compare_arrows', '[{"lang":"en","text":"Compare furnace zone 1 and zone 2 temperature."}]'::jsonb, true, 20),
+    ('assistant-prompt-zone-1-attributes', 'account_tree', '[{"lang":"en","text":"List attributes under sij/acroni/vv/hrm-furnace/equipment/zone-1."}]'::jsonb, true, 30),
+    ('assistant-prompt-zone-1-latest-temperature', 'thermostat', '[{"lang":"en","text":"What is the latest furnace zone 1 temperature?"}]'::jsonb, true, 40),
+    ('assistant-prompt-synthetic-chart', 'show_chart', '[{"lang":"en","text":"Create a synthetic line chart of y = x² from x = 0 to 10. Do not use UNS data."}]'::jsonb, true, 50),
+    ('assistant-prompt-temperature-normalizer-bundle', 'inventory_2', '[{"lang":"en","text":"Create a TypeScript service bundle named temperature-normalizer. It should normalize temperature values. Do not install or start it."}]'::jsonb, true, 60)
+) AS defaults(id, icon, messages, enabled, "sortOrder")
+CROSS JOIN claimed
+ON CONFLICT (id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS public."explore_presentation_policies" (
   "scope" text PRIMARY KEY,
   "label" text NULL,
@@ -2072,94 +2231,6 @@ ALTER TABLE public."explore_presentation_policies"
 
 CREATE INDEX IF NOT EXISTS idx_explore_presentation_policies_updated_at
   ON public."explore_presentation_policies" ("updatedAt" DESC);
-
-CREATE TABLE IF NOT EXISTS public."chat_llm_profile_overrides" (
-  "lane" text PRIMARY KEY,
-  "provider" text NULL,
-  "model" text NULL,
-  "transport" text NULL,
-  "timeoutMs" integer NULL,
-  "maxRetries" integer NULL,
-  "backoffMs" integer NULL,
-  "maxPromptChars" integer NULL,
-  "maxPromptTokens" integer NULL,
-  "contextMaxChars" integer NULL,
-  "contextMaxTokens" integer NULL,
-  "contextKeepRecentTurns" integer NULL,
-  "contextSummaryMaxChars" integer NULL,
-  "contextSummaryMaxTokens" integer NULL,
-  "toolPruningEnabled" boolean NULL,
-  "toolPruningAllowClientOverride" boolean NULL,
-  "maxToolHops" integer NULL,
-  "maxToolCalls" integer NULL,
-  "streamingEnabled" boolean NULL,
-  "maxResponseChars" integer NULL,
-  "reasoningEffort" text NULL,
-  "reasoningSummary" text NULL,
-  "includeEncryptedReasoning" boolean NULL,
-  "storeResponses" boolean NULL,
-  "previousResponseMode" text NULL,
-  "updatedBy" text NULL,
-  "updatedAt" timestamptz NOT NULL DEFAULT now()
-);
-
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "lane" text;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "provider" text;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "model" text;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "transport" text;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "timeoutMs" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "maxRetries" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "backoffMs" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "maxPromptChars" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "maxPromptTokens" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "contextMaxChars" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "contextMaxTokens" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "contextKeepRecentTurns" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "contextSummaryMaxChars" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "contextSummaryMaxTokens" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "toolPruningEnabled" boolean;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "toolPruningAllowClientOverride" boolean;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "maxToolHops" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "maxToolCalls" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "streamingEnabled" boolean;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "maxResponseChars" integer;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "reasoningEffort" text;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "reasoningSummary" text;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "includeEncryptedReasoning" boolean;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "storeResponses" boolean;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "previousResponseMode" text;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "updatedBy" text;
-ALTER TABLE public."chat_llm_profile_overrides"
-  ADD COLUMN IF NOT EXISTS "updatedAt" timestamptz NOT NULL DEFAULT now();
-
-CREATE INDEX IF NOT EXISTS idx_chat_llm_profile_overrides_updated_at
-  ON public."chat_llm_profile_overrides" ("updatedAt" DESC);
 
 CREATE TABLE IF NOT EXISTS public."chat_tool_execution_default_overrides" (
   "toolName" text PRIMARY KEY,
