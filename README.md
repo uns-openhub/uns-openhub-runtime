@@ -249,7 +249,10 @@ Review a generated release and print the safe image/commit/tag sequence:
 ```
 
 The checklist is read-only. It never stages, commits, tags, pushes, or
-publishes images.
+publishes images. Run all `./scripts/...` commands from the runtime repository
+root. `./scripts/check-release-version.sh <version>` is also read-only: it only
+checks version/artifact consistency before you decide whether to create a Git
+tag.
 
 Update the controller code in the running controller container. The runtime
 repository is the update channel: `git pull` downloads new compiled JavaScript
