@@ -94,4 +94,34 @@ for file in \
   }
 done
 
+for template in \
+  quadlet/templates/uns-datahub.network.tmpl \
+  quadlet/templates/uns-pgdata.volume.tmpl \
+  quadlet/templates/uns-postgres.container.tmpl \
+  quadlet/templates/uns-mosquitto.container.tmpl \
+  quadlet/templates/uns-caddy.container.tmpl \
+  quadlet/templates/uns-questdb.container.tmpl \
+  quadlet/templates/uns-controller.container.tmpl; do
+  [[ -s "$template" ]] || {
+    echo "Missing or empty Quadlet template: $template" >&2
+    exit 1
+  }
+done
+
+quadlet_tmp="$(mktemp -d)"
+trap 'rm -rf "$quadlet_tmp"' EXIT
+./bin/uns quadlet render \
+  --runtime-dir "$PWD" \
+  --env-file .env.example \
+  --output "$quadlet_tmp"
+
+[[ "$(find "$quadlet_tmp" -maxdepth 1 -type f \( -name '*.container' -o -name '*.volume' -o -name '*.network' \) | wc -l | tr -d '[:space:]')" = "11" ]]
+grep -Fx 'Image=docker.io/unsdatahub/uns-datahub-controller:latest' "$quadlet_tmp/uns-controller.container"
+grep -Fx 'Image=docker.io/unsdatahub/uns-postgres:latest' "$quadlet_tmp/uns-postgres.container"
+grep -Fx 'VolumeName=pgdata' "$quadlet_tmp/uns-pgdata.volume"
+if grep -R -F 'change-me' "$quadlet_tmp"; then
+  echo "Rendered Quadlet files contain a copied secret value." >&2
+  exit 1
+fi
+
 echo "Runtime bundle ${version} is internally consistent."

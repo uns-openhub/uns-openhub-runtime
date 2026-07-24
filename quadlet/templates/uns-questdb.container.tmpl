@@ -1,0 +1,20 @@
+[Unit]
+Description=UNS DataHub QuestDB
+
+[Container]
+ContainerName=uns-questdb
+Image=docker.io/questdb/questdb:latest
+Pull=missing
+Network=uns-datahub.network
+NetworkAlias=questdb
+PublishPort=9000:9000
+PublishPort=8812:8812
+PublishPort=9009:9009
+Volume=uns-questdb-data.volume:/var/lib/questdb
+
+[Service]
+Restart=always
+TimeoutStartSec=90
+
+[Install]
+WantedBy={{.InstallTarget}}

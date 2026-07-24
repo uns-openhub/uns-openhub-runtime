@@ -1,0 +1,21 @@
+[Unit]
+Description=UNS DataHub Caddy proxy
+After=uns-postgres.service uns-mosquitto.service
+
+[Container]
+ContainerName=uns-caddy
+Image=docker.io/library/caddy:latest
+Pull=missing
+Network=uns-datahub.network
+NetworkAlias=caddy
+PublishPort=8180:8180
+PublishPort=2019:2019
+Volume={{.CaddyConfigMount}}
+Exec=caddy run --config /etc/caddy/caddy.json
+
+[Service]
+Restart=always
+TimeoutStartSec=90
+
+[Install]
+WantedBy={{.InstallTarget}}
