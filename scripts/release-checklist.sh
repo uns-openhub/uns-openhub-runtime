@@ -63,6 +63,8 @@ git diff --check
 branch="$(git branch --show-current)"
 remote="$(git remote get-url origin 2>/dev/null || true)"
 status="$(git status --short)"
+printf -v runtime_dir_q '%q' "$runtime_dir"
+printf -v branch_q '%q' "${branch:-main}"
 
 echo "== Runtime release status =="
 echo "Version: ${version}"
@@ -104,18 +106,56 @@ cat <<EOF
    ${container_cmd} manifest inspect ${registry}/${repo_prefix}/${controller_repository}:${version}
    ${container_cmd} manifest inspect ${registry}/${repo_prefix}/${postgres_repository}:${version}
 
-4. Only after both versioned images are reachable, stage and review this
-   generated runtime release:
+   Continue only when both manifest commands exit successfully.
+
+4. Publish the generated runtime repository.
+
+   Run the following commands in the runtime checkout:
+   cd ${runtime_dir_q}
+
+   First review every generated addition, modification, and deletion:
+   git status --short
+   git diff --check
+   git diff --stat
+
+   If that list is expected, stage the complete generated release. "Stage"
+   means preparing these files for one Git commit; it does not push anything:
    git add -A
    git diff --cached --check
+   git diff --cached --name-status
    git diff --cached --stat
-   git commit -m "Release runtime ${version}"
-   git push origin ${branch:-main}
 
-5. Optional, only when a Git release tag is explicitly approved:
-   bash scripts/check-release-version.sh ${version}
-   git tag ${version}
+   If the staged list is not correct, unstage it without deleting local files:
+   git restore --staged .
+
+   If the staged list is correct, create and push the runtime commit:
+   git commit -m "Release runtime ${version}"
+   git push origin ${branch_q}
+   git status --short
+
+   The final status should be empty. At this point runtime main contains the
+   new release and operators can pull it.
+
+5. Decide whether to create a formal Git release tag.
+
+   Stop after step 4 if you only want to update runtime main.
+
+   For a formal immutable release matching the published image version, first
+   check that the tag does not already exist. If "git tag --list" prints the
+   version, do not recreate or move it:
+   git fetch --tags origin
+   git tag --list ${version}
+
+   The next script is read-only. It only checks that VERSION, the requested
+   tag, artifacts, and checksums agree; it does not create or push a tag:
+   ./scripts/check-release-version.sh ${version}
+
+   Only after that check succeeds, create and push the tag:
+   git tag -a ${version} -m "UNS DataHub runtime ${version}"
    git push origin ${version}
+
+   Pushing the tag triggers the runtime repository's release validation
+   workflow. It does not rebuild or publish the Docker images.
 
 No stage, commit, tag, push, or image publish action was performed.
 EOF
