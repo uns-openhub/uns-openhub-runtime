@@ -1,4 +1,5 @@
 .env
+quadlet/rendered/
 configs/uns-datahub-controller/config*.json
 !configs/uns-datahub-controller/config-example.json
 !configs/uns-datahub-controller/config-infisical-example.json
