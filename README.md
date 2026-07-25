@@ -254,13 +254,31 @@ root. `./scripts/check-release-version.sh <version>` is also read-only: it only
 checks version/artifact consistency before you decide whether to create a Git
 tag.
 
-Update the controller code in the running controller container. The runtime
-repository is the update channel: `git pull` downloads new compiled JavaScript
-artifacts into `artifacts/controller-runtime`.
+Synchronize a public or private runtime repository into a separate checkout:
 
 ```sh
-git pull
-./bin/uns controller update --tag latest
+./bin/uns runtime sync \
+  --repo https://github.com/uns-datahub/uns-datahub-runtime.git \
+  --dir "$HOME/uns-datahub-runtime-github"
+```
+
+The CLI first tries existing Git access. If an HTTPS repository still requires
+authentication, it asks for a GitHub read-only token using a hidden prompt. The
+token is passed through a temporary `GIT_ASKPASS` environment and is not stored
+in the remote URL or Git configuration. The command refuses dirty, mismatched,
+or non-fast-forward checkouts and verifies fetched runtime content before
+moving the local branch.
+
+On Windows, run `uns runtime sync` from an installed copy of `uns.exe` outside
+the checkout being updated so Git does not need to replace the running binary.
+
+Update the controller code in the running controller container from that
+verified checkout:
+
+```sh
+./bin/uns controller update \
+  --runtime-dir "$HOME/uns-datahub-runtime-github" \
+  --tag latest
 ```
 
 This replaces only the controller runtime files and restarts the PM2 process
@@ -272,6 +290,7 @@ You can also use a specific version or an explicit artifact:
 ```sh
 ./bin/uns controller update --tag 7.1.22
 ./bin/uns controller update \
+  --runtime-dir "$HOME/uns-datahub-runtime-github" \
   --artifact artifacts/controller-runtime/controller-runtime-<version>.tar.gz \
   --checksum artifacts/controller-runtime/controller-runtime-<version>.tar.gz.sha256
 ```
@@ -281,7 +300,8 @@ update. It no longer clones or builds the controller source in the running
 container. Keep the previous versioned artifact and checksum for offline
 rollback.
 
-The CLI also has a convenience flag:
+When running from an existing runtime checkout, the CLI also has a convenience
+flag:
 
 ```sh
 ./bin/uns controller update --pull --tag latest
