@@ -13,10 +13,9 @@ three common cases:
 
 ## Setup
 
-You need either Docker with Docker Compose, or Podman with Quadlet on Linux,
-plus access to the registry images configured in `.env`. Docker deployments
-use the generated Compose files. Podman production deployments use generated
-Quadlet units and do not require a Compose provider.
+You need Docker or Podman with Compose, plus access to the registry images
+configured in `.env`. The examples use `docker compose`; with Podman use
+`podman compose` with the same arguments.
 
 Run the commands from the runtime bundle directory. When you need the bundled
 CLI, use `./bin/uns` on macOS/Linux or `.\bin\uns.cmd` in Windows PowerShell.
@@ -28,7 +27,7 @@ Recommended setup:
 ```
 
 The wizard creates or updates `.env`, prepares local or Infisical settings, and
-prints Docker Compose or Podman Quadlet commands for the selected engine.
+prints the exact `docker compose` or `podman compose` commands to run next.
 
 Manual setup:
 
@@ -147,40 +146,7 @@ The bundled Infisical config expects these secrets:
 - `/keys`, environment `prod`: `PRIVATE_KEY`
 - `/openai`, environment `prod`: `AV_OPENAI_KEY`
 
-## Podman Production with Quadlet
-
-Render reviewable Quadlet files with concrete image coordinates, absolute bind
-paths, and configured Podman network/volume names:
-
-```sh
-./bin/uns quadlet render --runtime-dir "$PWD"
-```
-
-The rendered files contain no copied secret values. They reference `.env` and
-`.secrets` in the runtime checkout. Before migrating an existing Podman
-deployment, inspect `podman volume ls` and set the corresponding
-`UNS_*_VOLUME` values in `.env`; otherwise a correctly named but empty volume
-could be created.
-
-After review, install the units without starting them:
-
-```sh
-sudo ./bin/uns quadlet install \
-  --runtime-dir "$PWD" \
-  --scope system \
-  --mode both
-```
-
-The installer refuses changed managed files unless `--force` is explicit, and
-keeps timestamped backups when replacing them. It prints the exact `systemctl`
-commands for the selected mode. `--lite` omits QuestDB. Use `--scope user` for
-a deliberately rootless deployment.
-
-`quadlet install` never stops Compose containers, enables services, pulls
-images, or starts containers. Stop the old deployment and verify its volume
-mapping before executing the printed `systemctl enable --now` command.
-
-## Docker Compose: Start Infra Only
+## 1. Start Infra Only
 
 Use this when you only need local Postgres, Mosquitto, Caddy, and QuestDB.
 
@@ -209,7 +175,7 @@ Stop:
 docker compose -f docker-compose.infra.yml down
 ```
 
-## Docker Compose: Start Controller Only
+## 2. Start Controller Only
 
 Use this when Postgres, MQTT, and other infrastructure already exist elsewhere.
 Make sure `configs/uns-datahub-controller/config-example.json` points to those
@@ -238,7 +204,7 @@ Stop:
 docker compose -f docker-compose.controller.yml down
 ```
 
-## Docker Compose: Start Everything
+## 3. Start Everything
 
 Use this for a self-contained local runtime: infra plus controller.
 
