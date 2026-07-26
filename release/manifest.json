@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "version": "7.1.672",
+  "tag": "7.1.672",
+  "repository": "uns-datahub/uns-datahub-runtime",
+  "assets": [
+    {
+      "name": "controller-runtime-7.1.672.manifest.json",
+      "sha256": "9544ac8cd3d15a585a7750615c1ed21321e4cdf6e11c0aa052c7f3b1f3091887"
+    },
+    {
+      "name": "controller-runtime-7.1.672.tar.gz",
+      "sha256": "e571fe9109aadf7ffec49df5c94adbdf3f26ab2cb6762e38cf5fae36513fd67b"
+    },
+    {
+      "name": "controller-runtime-7.1.672.tar.gz.sha256",
+      "sha256": "ad09537dcbf26f10a95b8788f40682047ff159d2630d7af095760682c09d69a3"
+    },
+    {
+      "name": "infisical-rotator-7.1.672-darwin-amd64",
+      "sha256": "d25d3cae76bf6f85c1c5309557ae6620255c006610ae10500b56b970e4d94ea3"
+    },
+    {
+      "name": "infisical-rotator-7.1.672-darwin-arm64",
+      "sha256": "25abeb4ed702b0580b7f5ad044cd23af54bec07b767c210c5c40e2719eb0a673"
+    },
+    {
+      "name": "infisical-rotator-7.1.672-linux-amd64",
+      "sha256": "fe79006cf4dff5c7639d62322d1b4cd75de5f03a19d1bfd03904968bddbb6459"
+    },
+    {
+      "name": "infisical-rotator-7.1.672-linux-arm64",
+      "sha256": "b9d9c7b7e4cf940f520bae5d1804ada2238e5ffd444a2bd6274496fcf0b6172e"
+    },
+    {
+      "name": "infisical-rotator-7.1.672-windows-amd64.exe",
+      "sha256": "531edc27dd1120cf05ba0bd7607d9a9fd0f728accb5ad6e446841fd361589596"
+    },
+    {
+      "name": "infisical-rotator-7.1.672-windows-arm64.exe",
+      "sha256": "091e8783ed82b77cbd627b10208f9cb2f0e94966ce5e7fd5f9c61f754171bd77"
+    },
+    {
+      "name": "uns-7.1.672-darwin-amd64",
+      "sha256": "46c12477dcd798757eb257350fe86116ff3442484b4961bd35f3e8d817fc7ea1"
+    },
+    {
+      "name": "uns-7.1.672-darwin-arm64",
+      "sha256": "052137b2121b8426c93c604f66e4619912e20786c85889820bbfec78fc112113"
+    },
+    {
+      "name": "uns-7.1.672-linux-amd64",
+      "sha256": "fb8f132488e2097c5028f6d03b70e5a6cd7612d2cc7d9f4cb707ebd5df2baedd"
+    },
+    {
+      "name": "uns-7.1.672-linux-arm64",
+      "sha256": "5d6705047000d85f5eccaa6d891576d207c72a364dd3c6a4f2261e932e8bb20c"
+    },
+    {
+      "name": "uns-7.1.672-windows-amd64.exe",
+      "sha256": "d5b50f2bc8c98e7f1d0aafe72e5fad5d7e004780194a0c6d672f2f6bc641e17d"
+    },
+    {
+      "name": "uns-7.1.672-windows-arm64.exe",
+      "sha256": "d4a9b489d998adbdb9efa94106d8e1968a987eb9cd960202e04e9f930f1956f2"
+    }
+  ],
+  "controller": {
+    "schemaVersion": 1,
+    "name": "uns-datahub-controller-runtime",
+    "version": "7.1.672",
+    "packageName": "uns-datahub-controller",
+    "createdAt": "2026-07-24T11:14:36+02:00",
+    "nodeEngines": ">=22",
+    "packageManager": "pnpm@10.30.3",
+    "source": {
+      "commit": "fba527cfb962de461ae52294a91fbbfcef358bc2",
+      "ref": "main"
+    },
+    "files": {
+      "distFileCount": 809,
+      "distIndexSha256": "4f34790111a6bdc7113308243f7dfb89741ea4585f832cd5702ba4326bb68fd0",
+      "initSqlSha256": "84f0175ec5458f5a9d9f111c8f8276c9821fa954f0a0ee39f8caad0361010dd1",
+      "packageJsonSha256": "f7017e15e367e3763c7ce2754463b78896151cd567983c028bac7a835a10e5a5",
+      "pnpmLockSha256": "f554b5d2f181a40b271e3b6c47a764d74321e37d5f6420eeff5690ea3c021056"
+    }
+  }
+}

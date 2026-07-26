@@ -1,13 +1,8 @@
 @echo off
 setlocal
-set "BIN_DIR=%~dp0"
-if /I "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
-  set "ROTATOR_EXE=%BIN_DIR%infisical-rotator-windows-arm64.exe"
-) else (
-  set "ROTATOR_EXE=%BIN_DIR%infisical-rotator-windows-amd64.exe"
-)
-if not exist "%ROTATOR_EXE%" (
-  echo Missing executable: %ROTATOR_EXE% 1>&2
+for /f "usebackq delims=" %%F in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0runtime-download.ps1" infisical-rotator`) do set "ROTATOR_EXE=%%F"
+if not defined ROTATOR_EXE (
+  echo Unable to resolve Infisical rotator release binary. 1>&2
   exit /b 2
 )
 "%ROTATOR_EXE%" %*

@@ -8,23 +8,24 @@ if [[ -z "$tag" ]]; then
   echo "Usage: $0 <release-tag>" >&2
   exit 2
 fi
-
 if [[ "$tag" != "$version" ]]; then
   echo "Release tag '$tag' does not match VERSION '$version'." >&2
   exit 1
 fi
-
-for suffix in manifest.json tar.gz tar.gz.sha256; do
-  path="artifacts/controller-runtime/controller-runtime-${version}.${suffix}"
-  [[ -f "$path" ]] || {
-    echo "Missing release artifact: $path" >&2
-    exit 1
-  }
-done
-
-[[ -f "artifacts/controller-runtime/controller-runtime-latest.tar.gz.sha256" ]] || {
-  echo "Missing latest runtime checksum." >&2
+[[ "$(tr -d '[:space:]' < release/tag)" == "$version" ]] || {
+  echo "release/tag does not match VERSION." >&2
   exit 1
 }
+python3 - "$version" <<'PY'
+import json
+import sys
 
-echo "Release tag '$tag' matches runtime bundle '$version'."
+version = sys.argv[1]
+manifest = json.load(open("release/manifest.json"))
+if manifest.get("version") != version or manifest.get("tag") != version:
+    raise SystemExit("Release manifest does not match VERSION")
+if not manifest.get("assets"):
+    raise SystemExit("Release manifest has no assets")
+PY
+
+echo "Release tag '$tag' matches runtime source and release index '$version'."

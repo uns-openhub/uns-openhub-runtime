@@ -2,56 +2,73 @@
 set -euo pipefail
 
 version="$(tr -d '[:space:]' < VERSION)"
-artifact_dir="artifacts/controller-runtime"
-versioned_artifact="${artifact_dir}/controller-runtime-${version}.tar.gz"
-latest_artifact="${artifact_dir}/controller-runtime-latest.tar.gz"
+release_manifest="release/manifest.json"
+checksum_index="release/SHA256SUMS"
 
-python3 - <<'PY'
+python3 - "$version" <<'PY'
 import json
+import re
+import sys
 from pathlib import Path
 
+version = sys.argv[1]
 paths = list(Path("configs").rglob("*.json"))
-paths += list(Path("artifacts/controller-runtime").glob("*.manifest.json"))
+paths.append(Path("release/manifest.json"))
 for path in paths:
     with path.open(encoding="utf-8") as handle:
         json.load(handle)
-print(f"Validated {len(paths)} JSON files.")
+
+manifest = json.loads(Path("release/manifest.json").read_text(encoding="utf-8"))
+if manifest.get("schemaVersion") != 1:
+    raise SystemExit("Unsupported release manifest schema")
+if manifest.get("version") != version or manifest.get("tag") != version:
+    raise SystemExit("Release manifest version/tag does not match VERSION")
+repository = manifest.get("repository", "")
+if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+    raise SystemExit("Release repository must use owner/repo form")
+assets = manifest.get("assets")
+if not isinstance(assets, list) or not assets:
+    raise SystemExit("Release manifest has no assets")
+names = [asset.get("name") for asset in assets]
+if len(names) != len(set(names)):
+    raise SystemExit("Release manifest contains duplicate assets")
+for asset in assets:
+    if not re.fullmatch(r"[0-9a-f]{64}", str(asset.get("sha256", ""))):
+        raise SystemExit(f"Invalid asset checksum: {asset}")
+
+controller = manifest.get("controller", {})
+if controller.get("version") != version:
+    raise SystemExit("Controller provenance version does not match runtime")
+if not controller.get("source", {}).get("commit") or not controller.get("createdAt"):
+    raise SystemExit("Controller provenance is incomplete")
+print(f"Validated {len(paths)} JSON files and {len(assets)} release assets.")
 PY
 
-if command -v sha256sum >/dev/null 2>&1; then
-  for checksum in "${artifact_dir}"/*.sha256; do
-    (cd "$artifact_dir" && sha256sum --check "$(basename "$checksum")")
-  done
-elif command -v shasum >/dev/null 2>&1; then
-  for checksum in "${artifact_dir}"/*.sha256; do
-    (cd "$artifact_dir" && shasum -a 256 --check "$(basename "$checksum")")
-  done
-else
-  echo "sha256sum or shasum is required." >&2
-  exit 127
-fi
-
-[[ -f "$versioned_artifact" ]] || {
-  echo "Missing current runtime artifact: $versioned_artifact" >&2
+[[ "$(tr -d '[:space:]' < release/tag)" == "$version" ]] || {
+  echo "release/tag does not match VERSION" >&2
+  exit 1
+}
+[[ "$(tr -d '[:space:]' < release/repository)" == \
+  "$(python3 -c 'import json; print(json.load(open("release/manifest.json"))["repository"])')" ]] || {
+  echo "release/repository does not match release manifest" >&2
+  exit 1
+}
+[[ -s "$checksum_index" ]] || {
+  echo "Missing release checksum index: $checksum_index" >&2
   exit 1
 }
 
-cmp "$versioned_artifact" "$latest_artifact"
-
-allowed_artifacts="
-controller-runtime-${version}.manifest.json
-controller-runtime-${version}.tar.gz
-controller-runtime-${version}.tar.gz.sha256
-controller-runtime-latest.tar.gz
-controller-runtime-latest.tar.gz.sha256
-"
-while IFS= read -r artifact_path; do
-  artifact_name="$(basename "$artifact_path")"
-  if ! printf '%s' "$allowed_artifacts" | grep -Fxq "$artifact_name"; then
-    echo "Unexpected stale controller runtime artifact: $artifact_path" >&2
-    exit 1
-  fi
-done < <(find "$artifact_dir" -maxdepth 1 -type f -name 'controller-runtime-*' -print)
+expected_assets="$(
+  python3 - <<'PY'
+import json
+for asset in json.load(open("release/manifest.json"))["assets"]:
+    print(f'{asset["sha256"]}  {asset["name"]}')
+PY
+)"
+[[ "$(cat "$checksum_index")" == "$expected_assets" ]] || {
+  echo "release/SHA256SUMS does not match release manifest" >&2
+  exit 1
+}
 
 grep -Fx 'UNS_REGISTRY=docker.io' .env.example
 grep -Fx 'UNS_REPO_PREFIX=unsdatahub' .env.example
@@ -68,30 +85,41 @@ if grep -R -E 'fra\.ocir\.io|fricdwfcid28' \
   exit 1
 fi
 
-bash -n bin/uns bin/infisical-rotator scripts/release-checklist.sh
-
-[[ -x scripts/release-checklist.sh ]] || {
-  echo "Runtime release checklist is not executable." >&2
-  exit 1
-}
+bash -n \
+  bin/uns \
+  bin/infisical-rotator \
+  bin/runtime-download \
+  scripts/check-release-version.sh \
+  scripts/verify-release-assets.sh
 
 for file in \
-  bin/uns-linux-amd64 \
-  bin/uns-linux-arm64 \
-  bin/uns-darwin-amd64 \
-  bin/uns-darwin-arm64 \
-  bin/uns-windows-amd64.exe \
-  bin/uns-windows-arm64.exe \
-  bin/infisical-rotator-linux-amd64 \
-  bin/infisical-rotator-linux-arm64 \
-  bin/infisical-rotator-darwin-amd64 \
-  bin/infisical-rotator-darwin-arm64 \
-  bin/infisical-rotator-windows-amd64.exe \
-  bin/infisical-rotator-windows-arm64.exe; do
+  bin/uns \
+  bin/infisical-rotator \
+  bin/runtime-download \
+  bin/uns.cmd \
+  bin/infisical-rotator.cmd \
+  bin/runtime-download.ps1; do
   [[ -s "$file" ]] || {
-    echo "Missing or empty runtime binary: $file" >&2
+    echo "Missing runtime bootstrap file: $file" >&2
     exit 1
   }
 done
 
-echo "Runtime bundle ${version} is internally consistent."
+if find bin -maxdepth 1 -type f \
+  \( -name 'uns-*-amd64*' -o -name 'uns-*-arm64*' \
+     -o -name 'infisical-rotator-*-amd64*' \
+     -o -name 'infisical-rotator-*-arm64*' \) -print -quit |
+  grep -q .; then
+  echo "Platform binaries must be release assets, not runtime Git files." >&2
+  exit 1
+fi
+if [[ -e artifacts/controller-runtime ]]; then
+  echo "Controller tarballs must be release assets, not runtime Git files." >&2
+  exit 1
+fi
+
+if [[ -d ".release/$version" ]]; then
+  bash scripts/verify-release-assets.sh .
+fi
+
+echo "Runtime source ${version} is internally consistent."

@@ -1,0 +1,195 @@
+#!/bin/sh
+set -eu
+
+tool="${1:-}"
+case "$tool" in
+  uns|infisical-rotator) ;;
+  *)
+    echo "Usage: runtime-download <uns|infisical-rotator>" >&2
+    exit 2
+    ;;
+esac
+
+case "$0" in
+  */*) bin_dir=${0%/*} ;;
+  *) bin_dir=. ;;
+esac
+runtime_dir=$(CDPATH= cd -- "$bin_dir/.." && pwd -P)
+version=$(tr -d '[:space:]' <"$runtime_dir/VERSION")
+repository=$(tr -d '[:space:]' <"$runtime_dir/release/repository")
+tag=$(tr -d '[:space:]' <"$runtime_dir/release/tag")
+
+os=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m 2>/dev/null | tr '[:upper:]' '[:lower:]')
+case "$os" in
+  darwin*) goos=darwin ;;
+  linux*) goos=linux ;;
+  *)
+    echo "Unsupported OS: $os" >&2
+    exit 2
+    ;;
+esac
+case "$arch" in
+  x86_64|amd64) goarch=amd64 ;;
+  arm64|aarch64) goarch=arm64 ;;
+  *)
+    echo "Unsupported architecture: $arch" >&2
+    exit 2
+    ;;
+esac
+
+asset="${tool}-${version}-${goos}-${goarch}"
+expected=$(
+  awk -v name="$asset" '$2 == name { print $1; exit }' \
+    "$runtime_dir/release/SHA256SUMS"
+)
+if [ -z "$expected" ]; then
+  echo "Release checksum not found for $asset" >&2
+  exit 3
+fi
+
+sha256_value() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo "sha256sum or shasum is required" >&2
+    exit 127
+  fi
+}
+
+verify_asset() {
+  [ -s "$1" ] && [ "$(sha256_value "$1")" = "$expected" ]
+}
+
+local_asset="$runtime_dir/.release/$version/$asset"
+if verify_asset "$local_asset"; then
+  printf '%s\n' "$local_asset"
+  exit 0
+fi
+
+cache_dir="${UNS_RUNTIME_CACHE_DIR:-$runtime_dir/.cache/bin}"
+cached_asset="$cache_dir/$asset"
+if verify_asset "$cached_asset"; then
+  printf '%s\n' "$cached_asset"
+  exit 0
+fi
+
+command -v curl >/dev/null 2>&1 || {
+  echo "curl is required to download $asset" >&2
+  exit 127
+}
+mkdir -p "$cache_dir"
+tmp_asset=$(mktemp "$cache_dir/.${asset}.XXXXXX")
+tmp_json=$(mktemp "$cache_dir/.release.XXXXXX")
+cleanup() {
+  rm -f "$tmp_asset" "$tmp_json"
+}
+trap cleanup EXIT HUP INT TERM
+
+public_url="https://github.com/$repository/releases/download/$tag/$asset"
+if curl --fail --silent --show-error --location \
+  --output "$tmp_asset" "$public_url" 2>/dev/null &&
+  verify_asset "$tmp_asset"; then
+  chmod 755 "$tmp_asset"
+  mv -f "$tmp_asset" "$cached_asset"
+  printf '%s\n' "$cached_asset"
+  exit 0
+fi
+rm -f "$tmp_asset"
+tmp_asset=$(mktemp "$cache_dir/.${asset}.XXXXXX")
+
+token="${UNS_GITHUB_TOKEN:-${GH_TOKEN:-}}"
+if [ -z "$token" ]; then
+  if [ ! -r /dev/tty ]; then
+    echo "Private release access requires UNS_GITHUB_TOKEN or an interactive terminal." >&2
+    exit 3
+  fi
+  printf "GitHub read-only token: " >/dev/tty
+  saved_tty=$(stty -g </dev/tty)
+  trap 'stty "$saved_tty" </dev/tty 2>/dev/null || true; cleanup' EXIT HUP INT TERM
+  stty -echo </dev/tty
+  IFS= read -r token </dev/tty
+  stty "$saved_tty" </dev/tty
+  printf '\n' >/dev/tty
+  trap cleanup EXIT HUP INT TERM
+fi
+[ -n "$token" ] || {
+  echo "GitHub token must not be empty." >&2
+  exit 3
+}
+
+api_url="https://api.github.com/repos/$repository/releases/tags/$tag"
+curl_authenticated() {
+  printf 'header = "Authorization: Bearer %s"\n' "$token" |
+    curl --config - "$@"
+}
+
+curl_authenticated --fail --silent --show-error --location \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  --output "$tmp_json" "$api_url"
+
+if command -v python3 >/dev/null 2>&1; then
+  asset_api_url=$(
+    python3 - "$tmp_json" "$asset" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    release = json.load(handle)
+for asset in release.get("assets", []):
+    if asset.get("name") == sys.argv[2]:
+        print(asset.get("url", ""))
+        break
+PY
+  )
+elif command -v node >/dev/null 2>&1; then
+  asset_api_url=$(
+    node -e '
+      const fs = require("fs");
+      const release = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const asset = (release.assets || []).find((entry) => entry.name === process.argv[2]);
+      process.stdout.write(asset ? String(asset.url || "") : "");
+    ' "$tmp_json" "$asset"
+  )
+else
+  # GitHub currently serializes each release asset's API URL before its name.
+  # This fallback keeps minimal hosts usable; Python or Node is preferred.
+  asset_api_url=$(
+    awk -v wanted="$asset" '
+      /"url": "https:\/\/api.github.com\/repos\/.*\/releases\/assets\// {
+        url=$0
+        sub(/^.*"url": "/, "", url)
+        sub(/".*$/, "", url)
+      }
+      /"name": "/ {
+        name=$0
+        sub(/^.*"name": "/, "", name)
+        sub(/".*$/, "", name)
+        if (name == wanted) {
+          print url
+          exit
+        }
+      }
+    ' "$tmp_json"
+  )
+fi
+[ -n "$asset_api_url" ] || {
+  echo "Release asset $asset was not found in $repository@$tag" >&2
+  exit 3
+}
+
+curl_authenticated --fail --silent --show-error --location \
+  -H "Accept: application/octet-stream" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  --output "$tmp_asset" "$asset_api_url"
+verify_asset "$tmp_asset" || {
+  echo "SHA-256 verification failed for downloaded asset $asset" >&2
+  exit 3
+}
+chmod 755 "$tmp_asset"
+mv -f "$tmp_asset" "$cached_asset"
+token=""
+printf '%s\n' "$cached_asset"

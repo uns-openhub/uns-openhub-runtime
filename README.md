@@ -17,8 +17,12 @@ You need Docker or Podman with Compose, plus access to the registry images
 configured in `.env`. The examples use `docker compose`; with Podman use
 `podman compose` with the same arguments.
 
-Run the commands from the runtime bundle directory. When you need the bundled
-CLI, use `./bin/uns` on macOS/Linux or `.\bin\uns.cmd` in Windows PowerShell.
+Run the commands from the runtime bundle directory. Use `./bin/uns` on
+macOS/Linux or `.\bin\uns.cmd` in Windows PowerShell. The small launcher
+selects the current platform and verifies a versioned CLI asset before running
+it. A generated/offline bundle uses its local `.release` assets; a Git checkout
+downloads the asset on first use. Public releases need no credential. A private
+release prompts for a read-only GitHub token without displaying or storing it.
 
 Recommended setup:
 
@@ -242,17 +246,15 @@ Reconfigure the runtime:
 ./bin/uns init -i
 ```
 
-Review a generated release and print the safe image/commit/tag sequence:
+Before creating an optional Git release tag, check version and release-index
+consistency from the runtime repository root:
 
 ```sh
-./scripts/release-checklist.sh
+./scripts/check-release-version.sh <version>
 ```
 
-The checklist is read-only. It never stages, commits, tags, pushes, or
-publishes images. Run all `./scripts/...` commands from the runtime repository
-root. `./scripts/check-release-version.sh <version>` is also read-only: it only
-checks version/artifact consistency before you decide whether to create a Git
-tag.
+The check is read-only. It never stages, commits, tags, pushes, or publishes
+images.
 
 Synchronize a public or private runtime repository into a separate checkout:
 
@@ -262,7 +264,9 @@ Synchronize a public or private runtime repository into a separate checkout:
   --dir "$HOME/uns-datahub-runtime-github"
 ```
 
-The CLI first tries existing Git access. If an HTTPS repository still requires
+The CLI first tries existing Git access. The initial checkout is shallow so
+historic binary blobs from older runtime revisions are not downloaded. If an
+HTTPS repository still requires
 authentication, it asks for a GitHub read-only token using a hidden prompt. The
 token is passed through a temporary `GIT_ASKPASS` environment and is not stored
 in the remote URL or Git configuration. The command refuses dirty, mismatched,
@@ -272,8 +276,8 @@ moving the local branch.
 On Windows, run `uns runtime sync` from an installed copy of `uns.exe` outside
 the checkout being updated so Git does not need to replace the running binary.
 
-Update the controller code in the running controller container from that
-verified checkout:
+Update the controller code in the running controller container from the
+versioned GitHub Release:
 
 ```sh
 ./bin/uns controller update \
@@ -285,20 +289,22 @@ This replaces only the controller runtime files and restarts the PM2 process
 named `controller`. It does not recreate the container and does not replace RTT
 node apps.
 
-You can also use a specific version or an explicit artifact:
+`latest` means the immutable version recorded in the verified runtime
+checkout, not an unpinned controller-source branch. You can also use a specific
+version or an explicit offline artifact:
 
 ```sh
 ./bin/uns controller update --tag 7.1.22
 ./bin/uns controller update \
-  --runtime-dir "$HOME/uns-datahub-runtime-github" \
-  --artifact artifacts/controller-runtime/controller-runtime-<version>.tar.gz \
-  --checksum artifacts/controller-runtime/controller-runtime-<version>.tar.gz.sha256
+  --artifact controller-runtime-<version>.tar.gz \
+  --checksum controller-runtime-<version>.tar.gz.sha256 \
+  --offline
 ```
 
 `uns controller refresh` is a compatibility alias for this artifact-based
-update. It no longer clones or builds the controller source in the running
-container. Keep the previous versioned artifact and checksum for offline
-rollback.
+update. It no longer clones or builds controller source in the running
+container. Release downloads are cached under `.cache/releases`; keep the
+previous versioned artifact and checksum for offline rollback.
 
 When running from an existing runtime checkout, the CLI also has a convenience
 flag:

@@ -1,13 +1,8 @@
 @echo off
 setlocal
-set "BIN_DIR=%~dp0"
-if /I "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
-  set "UNS_EXE=%BIN_DIR%uns-windows-arm64.exe"
-) else (
-  set "UNS_EXE=%BIN_DIR%uns-windows-amd64.exe"
-)
-if not exist "%UNS_EXE%" (
-  echo Missing executable: %UNS_EXE% 1>&2
+for /f "usebackq delims=" %%F in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0runtime-download.ps1" uns`) do set "UNS_EXE=%%F"
+if not defined UNS_EXE (
+  echo Unable to resolve UNS CLI release binary. 1>&2
   exit /b 2
 )
 "%UNS_EXE%" %*
