@@ -42,27 +42,27 @@
     },
     {
       "name": "uns-7.1.672-darwin-amd64",
-      "sha256": "c515ef03e54904637bf9a58483b4831b0f0b3ab7fd2d6b5697ef25f132c30d6f"
+      "sha256": "001f74abf19de81a6b864dee33b7822966286bdb9990bccedaf847d808114e13"
     },
     {
       "name": "uns-7.1.672-darwin-arm64",
-      "sha256": "04c5fedc0c0873016555b3eea0b521fce52c5dc1120b6d2b7cf621897086c86f"
+      "sha256": "b072e668a6f383d38baf747dcc9a04a4760ba903ab9fcfd3e72c917bc69ca912"
     },
     {
       "name": "uns-7.1.672-linux-amd64",
-      "sha256": "128c4c2fc259483ad51c47802e40f161cca281a68d3859513a47c2c1f0cd4c50"
+      "sha256": "7fc136160390260ed4fb84c8699948c15f479d7590e74ee8687bd426b1c096d3"
     },
     {
       "name": "uns-7.1.672-linux-arm64",
-      "sha256": "89b5db51cd28ebfea4d7ee083781ebdaffb54612db5e364d98ae0aa2b712106b"
+      "sha256": "a92606b2673a7df63fbaa8a50bdf9692b460e1e9cdc096f2c727393bc6884642"
     },
     {
       "name": "uns-7.1.672-windows-amd64.exe",
-      "sha256": "8331a85f96ea6103e4105f637d473386250c366c53ac1b7a55579357e7229673"
+      "sha256": "3f53be323ec5ccc5b74fde7381a60d415477aa40705ada8c5512a9616f6dcefc"
     },
     {
       "name": "uns-7.1.672-windows-arm64.exe",
-      "sha256": "90cf1424c57f35f18faef4b591a75f74402289bb2e09402bb8bb9b2c3b94964d"
+      "sha256": "086c2ef6793676b97f999e5c9d26b4ff2bdb3cc8146c5fac8a32b8198f4fd9d4"
     }
   ],
   "controller": {
