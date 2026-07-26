@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+case "$0" in
+  */*) bin_dir=${0%/*} ;;
+  *) bin_dir=. ;;
+esac
+exe=$("$bin_dir/runtime-download" uns)
+exec "$exe" "$@"

@@ -1,0 +1,25 @@
+[Unit]
+Description=UNS DataHub Controller (Podman)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=UNS_CONTROLLER_REPOSITORY=uns-datahub-controller
+EnvironmentFile=/etc/uns/controller.env
+ExecStart=/usr/bin/podman run --replace --name uns-controller --detach \
+  -p 3200:3200 \
+  -v /etc/uns/configs/uns-datahub-controller:/usr/src/app/config-overrides:ro \
+  -v uns_crypto:/usr/src/app/crypto \
+  -v rtt_nodes:/usr/src/app/rtt-nodes \
+  --secret infisical_token,type=mount \
+  --secret infisical_project_id,type=mount \
+  --secret infisical_site_url,type=mount \
+  --env-file /etc/uns/controller.env \
+  ${UNS_REGISTRY}/${UNS_REPO_PREFIX}/${UNS_CONTROLLER_REPOSITORY}:${UNS_TAG}
+ExecStop=/usr/bin/podman stop uns-controller
+ExecStopPost=/usr/bin/podman rm uns-controller
+
+[Install]
+WantedBy=multi-user.target
