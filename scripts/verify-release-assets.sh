@@ -54,15 +54,31 @@ while read -r expected asset_name extra; do
 done <"$checksum_index"
 
 offline_name="uns-datahub-runtime-${version}-offline.tar.gz"
-[[ -s "$asset_dir/$offline_name" ]] || {
-  echo "Missing offline runtime bundle: $asset_dir/$offline_name" >&2
-  exit 1
-}
-read -r offline_sha offline_file <"$asset_dir/$offline_name.sha256"
-[[ "$offline_file" == "$offline_name" ]] || {
-  echo "Offline checksum references unexpected file: $offline_file" >&2
-  exit 1
-}
-verify_checksum "$offline_sha" "$asset_dir/$offline_name"
+offline_marker="$runtime_dir/release/offline-bundle"
+if [[ -f "$offline_marker" ]]; then
+  [[ "$(tr -d '[:space:]' < "$offline_marker")" == "$version" ]] || {
+    echo "Offline bundle marker does not match runtime version" >&2
+    exit 1
+  }
+  if [[ -e "$asset_dir/$offline_name" || -e "$asset_dir/$offline_name.sha256" ]]; then
+    echo "Embedded offline runtime must not contain a recursive offline archive" >&2
+    exit 1
+  fi
+  if [[ -e "$asset_dir/bootstrap" ]]; then
+    echo "Private offline runtime must not embed public bootstrap release assets" >&2
+    exit 1
+  fi
+else
+  [[ -s "$asset_dir/$offline_name" ]] || {
+    echo "Missing offline runtime bundle: $asset_dir/$offline_name" >&2
+    exit 1
+  }
+  read -r offline_sha offline_file <"$asset_dir/$offline_name.sha256"
+  [[ "$offline_file" == "$offline_name" ]] || {
+    echo "Offline checksum references unexpected file: $offline_file" >&2
+    exit 1
+  }
+  verify_checksum "$offline_sha" "$asset_dir/$offline_name"
+fi
 
 echo "Runtime release assets $version are internally consistent."

@@ -17,6 +17,50 @@ You need Docker or Podman with Compose, plus access to the registry images
 configured in `.env`. The examples use `docker compose`; with Podman use
 `podman compose` with the same arguments.
 
+### Fresh install without Git or GitHub CLI
+
+The public `uns-datahub-bootstrap` release contains only a minimal Go
+downloader and installers. This runtime repository and its release assets may
+remain private. macOS and Linux users start without Git, GitHub CLI, Node,
+Python, or `jq`:
+
+```sh
+curl -fsSL \
+  https://github.com/uns-datahub/uns-datahub-bootstrap/releases/latest/download/install.sh |
+  sh
+
+"$HOME/.local/bin/uns-bootstrap" install
+```
+
+The installer verifies and installs `uns-bootstrap` under `~/.local/bin`.
+It first tries the matching runtime release anonymously. If the runtime is
+private, it asks for a GitHub token using a hidden prompt and uses it only for
+the release API requests; the token is not stored. Use a fine-grained,
+expiring token limited to `uns-datahub-runtime` with read-only Contents
+permission.
+
+The bootstrap verifies the immutable offline runtime bundle, refuses a
+non-empty destination, extracts it without links or path traversal, verifies
+the matching private `uns` CLI, and starts that CLI's init wizard.
+
+Windows PowerShell:
+
+```powershell
+Invoke-WebRequest `
+  https://github.com/uns-datahub/uns-datahub-bootstrap/releases/latest/download/install.ps1 `
+  -OutFile install.ps1
+.\install.ps1
+& "$HOME\.local\bin\uns-bootstrap.exe" install
+```
+
+Use `uns-bootstrap install --version <version>` for an immutable older release
+or `uns-bootstrap install --offline <bundle.tar.gz>` with its sibling
+`.sha256` file for an offline installation. For unattended private downloads,
+provide `UNS_GITHUB_TOKEN` through the host's secret mechanism rather than a
+command-line argument.
+
+### Existing runtime checkout
+
 Run the commands from the runtime bundle directory. Use `./bin/uns` on
 macOS/Linux or `.\bin\uns.cmd` in Windows PowerShell. The small launcher
 selects the current platform and verifies a versioned CLI asset before running
@@ -244,6 +288,12 @@ Reconfigure the runtime:
 
 ```sh
 ./bin/uns init -i
+```
+
+Install a verified private runtime without Git from the public bootstrap:
+
+```sh
+uns-bootstrap install --dir "$HOME/uns-datahub-runtime"
 ```
 
 Before creating an optional Git release tag, check version and release-index

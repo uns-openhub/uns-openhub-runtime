@@ -53,6 +53,13 @@ PY
   echo "release/repository does not match release manifest" >&2
   exit 1
 }
+bootstrap_repository="$(
+  tr -d '[:space:]' <release/bootstrap-repository
+)"
+[[ "$bootstrap_repository" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || {
+  echo "release/bootstrap-repository must use owner/repo form" >&2
+  exit 1
+}
 [[ -s "$checksum_index" ]] || {
   echo "Missing release checksum index: $checksum_index" >&2
   exit 1
