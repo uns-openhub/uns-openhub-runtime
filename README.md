@@ -33,15 +33,19 @@ curl -fsSL \
 ```
 
 The installer verifies and installs `uns-bootstrap` under `~/.local/bin`.
-It first tries the matching runtime release anonymously. If the runtime is
+Bootstrap releases use their own semantic version and embed the default
+runtime version they install. It first tries that runtime release anonymously.
+If the runtime is
 private, it asks for a GitHub token using a hidden prompt and uses it only for
 the release API requests; the token is not stored. Use a fine-grained,
 expiring token limited to `uns-datahub-runtime` with read-only Contents
 permission.
 
-The bootstrap verifies the immutable offline runtime bundle, refuses a
-non-empty destination, extracts it without links or path traversal, verifies
-the matching private `uns` CLI, and starts that CLI's init wizard.
+The bootstrap verifies the immutable offline runtime bundle, refuses an
+unknown or non-matching non-empty destination, extracts it without links or
+path traversal, verifies the matching private `uns` CLI, and starts that CLI's
+init wizard. Re-running it for the same verified runtime safely reuses the
+installation and resumes the wizard.
 
 Windows PowerShell:
 
@@ -53,7 +57,8 @@ Invoke-WebRequest `
 & "$HOME\.local\bin\uns-bootstrap.exe" install
 ```
 
-Use `uns-bootstrap install --version <version>` for an immutable older release
+Use `uns-bootstrap version` to show both versions. Use
+`uns-bootstrap install --version <runtime-version>` for an immutable older runtime
 or `uns-bootstrap install --offline <bundle.tar.gz>` with its sibling
 `.sha256` file for an offline installation. For unattended private downloads,
 provide `UNS_GITHUB_TOKEN` through the host's secret mechanism rather than a
@@ -75,7 +80,9 @@ Recommended setup:
 ```
 
 The wizard creates or updates `.env`, prepares local or Infisical settings, and
-prints the exact `docker compose` or `podman compose` commands to run next.
+prints the exact `docker compose` or `podman compose` commands to run next. For
+a new `.env`, it pins `UNS_TAG` to the image version recorded when this runtime
+was generated; an existing `.env` or explicit `UNS_TAG` override is preserved.
 
 Manual setup:
 
@@ -92,7 +99,7 @@ UNS_REGISTRY=docker.io
 UNS_REPO_PREFIX=unsdatahub
 UNS_CONTROLLER_REPOSITORY=uns-datahub-controller
 UNS_POSTGRES_REPOSITORY=uns-postgres
-UNS_TAG=latest
+UNS_TAG=<controller/Postgres image version>
 CONFIG_FILE=config-example.json
 ```
 
@@ -116,17 +123,17 @@ public and does not require authentication. If an existing `.env` still has
 defaults so regeneration does not overwrite the preserved `.env`.
 
 3. For local runs without Infisical, keep `CONFIG_FILE=config-example.json`.
-   This config reads optional Azure and OpenAI values from `.env`:
+   Azure DevOps repository access is optional and can be configured manually
+   in `.env`:
 
 ```env
 AZURE_CLIENT_ID=
 AZURE_CLIENT_SECRET=
 AZURE_SCOPE=
 AZURE_TENANT_ID=
-OPENAI_KEY=
 ```
 
-Leave them empty if you do not use those integrations. The default local
+Leave them empty if you do not use that integration. The default local
 Postgres password is read from `POSTGRES_PASSWORD` in `.env`. If you change
 `POSTGRES_USER` or `POSTGRES_DB`, update the same values in
 `configs/uns-datahub-controller/config-example.json`.
@@ -192,7 +199,6 @@ The bundled Infisical config expects these secrets:
 - `/db/pg`, environment `prod`: `PG_PASS`
 - `/azure`, environment `dev`: `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SCOPE`, `AZURE_TENANT_ID`
 - `/keys`, environment `prod`: `PRIVATE_KEY`
-- `/openai`, environment `prod`: `AV_OPENAI_KEY`
 
 ## 1. Start Infra Only
 

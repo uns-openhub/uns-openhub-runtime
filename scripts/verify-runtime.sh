@@ -2,16 +2,18 @@
 set -euo pipefail
 
 version="$(tr -d '[:space:]' < VERSION)"
+image_tag="$(tr -d '[:space:]' < release/image-tag)"
 release_manifest="release/manifest.json"
 checksum_index="release/SHA256SUMS"
 
-python3 - "$version" <<'PY'
+python3 - "$version" "$image_tag" <<'PY'
 import json
 import re
 import sys
 from pathlib import Path
 
 version = sys.argv[1]
+image_tag = sys.argv[2]
 paths = list(Path("configs").rglob("*.json"))
 paths.append(Path("release/manifest.json"))
 for path in paths:
@@ -19,10 +21,12 @@ for path in paths:
         json.load(handle)
 
 manifest = json.loads(Path("release/manifest.json").read_text(encoding="utf-8"))
-if manifest.get("schemaVersion") != 1:
+if manifest.get("schemaVersion") != 2:
     raise SystemExit("Unsupported release manifest schema")
 if manifest.get("version") != version or manifest.get("tag") != version:
     raise SystemExit("Release manifest version/tag does not match VERSION")
+if manifest.get("imageTag") != image_tag:
+    raise SystemExit("Release manifest imageTag does not match release/image-tag")
 repository = manifest.get("repository", "")
 if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
     raise SystemExit("Release repository must use owner/repo form")
@@ -38,7 +42,9 @@ for asset in assets:
 
 controller = manifest.get("controller", {})
 if controller.get("version") != version:
-    raise SystemExit("Controller provenance version does not match runtime")
+    raise SystemExit("Controller artifact version does not match runtime")
+if not controller.get("packageVersion"):
+    raise SystemExit("Controller package provenance is incomplete")
 if not controller.get("source", {}).get("commit") or not controller.get("createdAt"):
     raise SystemExit("Controller provenance is incomplete")
 print(f"Validated {len(paths)} JSON files and {len(assets)} release assets.")
@@ -81,6 +87,7 @@ grep -Fx 'UNS_REGISTRY=docker.io' .env.example
 grep -Fx 'UNS_REPO_PREFIX=unsdatahub' .env.example
 grep -Fx 'UNS_CONTROLLER_REPOSITORY=uns-datahub-controller' .env.example
 grep -Fx 'UNS_POSTGRES_REPOSITORY=uns-postgres' .env.example
+grep -Fx "UNS_TAG=$image_tag" .env.example
 grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsdatahub}/${UNS_CONTROLLER_REPOSITORY:-uns-datahub-controller}:${UNS_TAG:-latest}' \
   docker-compose.controller.yml docker-compose.yml
 grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsdatahub}/${UNS_POSTGRES_REPOSITORY:-uns-postgres}:${UNS_TAG:-latest}' \

@@ -70,12 +70,6 @@
     "swaggerPath": "/uns-api-global/general-api/catchall-swagger.json"
   },
 
-  "llm": {
-    "apiKey": {"environment": "prod", "key": "AV_OPENAI_KEY", "provider": "infisical", "path": "/openai"},
-    "model": "gpt-4o",
-    "provider": "openai"
-  },
-
   "caddy": {
     "adminUrl": "http://[CADDY_ADMIN_HOST]:2019/",
     "proxyHost": "https://[PUBLIC_UNS_DOMAIN]",
