@@ -45,7 +45,21 @@ The bootstrap verifies the immutable offline runtime bundle, refuses an
 unknown or non-matching non-empty destination, extracts it without links or
 path traversal, verifies the matching private `uns` CLI, and starts that CLI's
 init wizard. Re-running it for the same verified runtime safely reuses the
-installation and resumes the wizard.
+installation and resumes the wizard. If the destination contains a different
+or unverifiable runtime, the error reports the found and requested versions
+when available and prints commands for a side-by-side install or a safe
+rename-and-retry. The init summary starts its copyable command sequence by
+changing to the initialized runtime directory, so it also works when bootstrap
+was launched elsewhere.
+
+The default target is the stable per-user directory
+`$HOME/uns-datahub-runtime`. To install beside the current working directory
+instead:
+
+```sh
+"$HOME/.local/bin/uns-bootstrap" install \
+  --dir "$PWD/uns-datahub-runtime"
+```
 
 Windows PowerShell:
 
@@ -55,6 +69,14 @@ Invoke-WebRequest `
   -OutFile install.ps1
 .\install.ps1
 & "$HOME\.local\bin\uns-bootstrap.exe" install
+```
+
+The Windows default is `$HOME\uns-datahub-runtime`. To install beside the
+current PowerShell directory instead:
+
+```powershell
+& "$HOME\.local\bin\uns-bootstrap.exe" install `
+  --dir (Join-Path $PWD "uns-datahub-runtime")
 ```
 
 Use `uns-bootstrap version` to show both versions. Use

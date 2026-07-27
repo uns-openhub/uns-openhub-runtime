@@ -1,75 +1,75 @@
 {
   "schemaVersion": 2,
-  "version": "7.1.674",
-  "tag": "7.1.674",
+  "version": "7.1.675",
+  "tag": "7.1.675",
   "imageTag": "7.1.673",
   "repository": "uns-datahub/uns-datahub-runtime",
   "assets": [
     {
-      "name": "controller-runtime-7.1.674.manifest.json",
-      "sha256": "8fc92ce413e0a17c2827723d07892a3bb41a0f7442a6673dd74b30a190bf470d"
+      "name": "controller-runtime-7.1.675.manifest.json",
+      "sha256": "9c02c10c8be8ebb6d9846b57f681e84d26717fa6cc31d3e9e8742358a074010a"
     },
     {
-      "name": "controller-runtime-7.1.674.tar.gz",
-      "sha256": "747d909379e12120ad1cc1057b319529aee5ada9083a8cb3b30189cfe4cbb042"
+      "name": "controller-runtime-7.1.675.tar.gz",
+      "sha256": "d17d13ba254b3bd4634d3f29ec75e7333df47774d2ca027b028355efc5ad3d81"
     },
     {
-      "name": "controller-runtime-7.1.674.tar.gz.sha256",
-      "sha256": "e40b93c30ec0c5e63c65e3dc2e97161478392904a528710e97ae028c324d085b"
+      "name": "controller-runtime-7.1.675.tar.gz.sha256",
+      "sha256": "718b882dcbdf73d7544e84e8808637015b2f345347801602aa10a4aba33b2c5a"
     },
     {
-      "name": "infisical-rotator-7.1.674-darwin-amd64",
+      "name": "infisical-rotator-7.1.675-darwin-amd64",
       "sha256": "d25d3cae76bf6f85c1c5309557ae6620255c006610ae10500b56b970e4d94ea3"
     },
     {
-      "name": "infisical-rotator-7.1.674-darwin-arm64",
+      "name": "infisical-rotator-7.1.675-darwin-arm64",
       "sha256": "25abeb4ed702b0580b7f5ad044cd23af54bec07b767c210c5c40e2719eb0a673"
     },
     {
-      "name": "infisical-rotator-7.1.674-linux-amd64",
+      "name": "infisical-rotator-7.1.675-linux-amd64",
       "sha256": "fe79006cf4dff5c7639d62322d1b4cd75de5f03a19d1bfd03904968bddbb6459"
     },
     {
-      "name": "infisical-rotator-7.1.674-linux-arm64",
+      "name": "infisical-rotator-7.1.675-linux-arm64",
       "sha256": "b9d9c7b7e4cf940f520bae5d1804ada2238e5ffd444a2bd6274496fcf0b6172e"
     },
     {
-      "name": "infisical-rotator-7.1.674-windows-amd64.exe",
+      "name": "infisical-rotator-7.1.675-windows-amd64.exe",
       "sha256": "531edc27dd1120cf05ba0bd7607d9a9fd0f728accb5ad6e446841fd361589596"
     },
     {
-      "name": "infisical-rotator-7.1.674-windows-arm64.exe",
+      "name": "infisical-rotator-7.1.675-windows-arm64.exe",
       "sha256": "091e8783ed82b77cbd627b10208f9cb2f0e94966ce5e7fd5f9c61f754171bd77"
     },
     {
-      "name": "uns-7.1.674-darwin-amd64",
-      "sha256": "43d297e89e28aa7c20c5382f049a54ca6123fe883b6eefd5c0c5d3f2d505ea0d"
+      "name": "uns-7.1.675-darwin-amd64",
+      "sha256": "5faa09bf6d8016d315ef4b4edd9a9bde3c78d6eef70cc7975e8baf68f77c462d"
     },
     {
-      "name": "uns-7.1.674-darwin-arm64",
-      "sha256": "9b1636e6c3f9066e222728bd5e781252a4ebc668f46617c87ad7bd8d240fa76c"
+      "name": "uns-7.1.675-darwin-arm64",
+      "sha256": "6354ce5cc9f798b7693acc26bdef9a4511631e242318484aafffddb95ba25f88"
     },
     {
-      "name": "uns-7.1.674-linux-amd64",
-      "sha256": "13d321e68b5e901c61222e87cb4505679809fb6973fe5e6ab1f1a54ed1aa3976"
+      "name": "uns-7.1.675-linux-amd64",
+      "sha256": "9bf8363557a147eeafb8d7357143cd2f540c5842d194e1276c28ab4d0eec42af"
     },
     {
-      "name": "uns-7.1.674-linux-arm64",
-      "sha256": "a4218828133ff3961ee903602248b10d48ffd76e73ccb3eb3b075b3c36eed931"
+      "name": "uns-7.1.675-linux-arm64",
+      "sha256": "c79de8faef83c241f0f9f69845f99f2155b8100251b7cac965ae8bba18192a3f"
     },
     {
-      "name": "uns-7.1.674-windows-amd64.exe",
-      "sha256": "c456d02434edf75c141a29c11dc0b4b306ca4b8a353e53831f19cfdc5512b54d"
+      "name": "uns-7.1.675-windows-amd64.exe",
+      "sha256": "49d79c95d03b7e364c0b9000fa9b7b053dc801a8f8e4bed03d3d5bc0ae89b8b4"
     },
     {
-      "name": "uns-7.1.674-windows-arm64.exe",
-      "sha256": "2449b69544c09c06ed11ae8b04887beb480700ddbe5862ae0ae7c95f420622a2"
+      "name": "uns-7.1.675-windows-arm64.exe",
+      "sha256": "18b5982463477b4c533cce5daebe9bd869d509baed6e0bc222e8f2eb4d153bde"
     }
   ],
   "controller": {
     "schemaVersion": 1,
     "name": "uns-datahub-controller-runtime",
-    "version": "7.1.674",
+    "version": "7.1.675",
     "packageVersion": "7.1.673",
     "packageName": "uns-datahub-controller",
     "createdAt": "2026-07-26T22:32:02+02:00",
