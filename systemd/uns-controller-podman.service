@@ -1,5 +1,5 @@
 [Unit]
-Description=UNS DataHub Controller (Podman)
+Description=UNS OpenHub Controller (Podman)
 After=network-online.target
 Wants=network-online.target
 

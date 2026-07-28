@@ -19,14 +19,14 @@ configured in `.env`. The examples use `docker compose`; with Podman use
 
 ### Fresh install without Git or GitHub CLI
 
-The public `uns-datahub-bootstrap` release contains only a minimal Go
+The public `uns-openhub-bootstrap` release contains only a minimal Go
 downloader and installers. This runtime repository and its release assets may
 remain private. macOS and Linux users start without Git, GitHub CLI, Node,
 Python, or `jq`:
 
 ```sh
 curl -fsSL \
-  https://github.com/uns-datahub/uns-datahub-bootstrap/releases/latest/download/install.sh |
+  https://github.com/uns-openhub/uns-openhub-bootstrap/releases/latest/download/install.sh |
   sh
 
 "$HOME/.local/bin/uns-bootstrap" install
@@ -65,7 +65,7 @@ Windows PowerShell:
 
 ```powershell
 Invoke-WebRequest `
-  https://github.com/uns-datahub/uns-datahub-bootstrap/releases/latest/download/install.ps1 `
+  https://github.com/uns-openhub/uns-openhub-bootstrap/releases/latest/download/install.ps1 `
   -OutFile install.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 & "$HOME\.local\bin\uns-bootstrap.exe" install
@@ -340,7 +340,7 @@ Synchronize a public or private runtime repository into a separate checkout:
 
 ```sh
 ./bin/uns runtime sync \
-  --repo https://github.com/uns-datahub/uns-openhub-runtime.git \
+  --repo https://github.com/uns-openhub/uns-openhub-runtime.git \
   --dir "$HOME/uns-datahub-runtime-github"
 ```
 
