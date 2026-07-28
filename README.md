@@ -79,9 +79,12 @@ current PowerShell directory instead:
   --dir (Join-Path $PWD "uns-datahub-runtime")
 ```
 
-Use `uns-bootstrap version` to show both versions. Use
-`uns-bootstrap install --version <runtime-version>` for an immutable older runtime
-or `uns-bootstrap install --offline <bundle.tar.gz>` with its sibling
+Use `uns-bootstrap version` to show the Bootstrap version and the Runtime
+release it selects. The controller and custom PostgreSQL image tag is a third,
+independent version boundary: read `release/manifest.json` → `imageTag` and the
+effective `UNS_TAG`. Use
+`uns-bootstrap install --version <runtime-version>` for an immutable older
+runtime or `uns-bootstrap install --offline <bundle.tar.gz>` with its sibling
 `.sha256` file for an offline installation. For unattended private downloads,
 provide `UNS_GITHUB_TOKEN` through the host's secret mechanism rather than a
 command-line argument.
@@ -127,6 +130,20 @@ UNS_TAG=<controller/Postgres image version>
 CONFIG_FILE=config-example.json
 ```
 
+The controller image is private during the Runtime preview. Authenticate the
+container engine before starting a mode that includes the controller:
+
+```sh
+docker login docker.io
+# or
+podman login docker.io
+```
+
+Use your Docker Hub username and an access token. The container engine stores
+the credential in its own credential store; do not put it in `.env`. Docker
+Hub image access is separate from the GitHub token used to download the
+private Runtime.
+
 These defaults resolve to:
 
 ```text
@@ -134,8 +151,8 @@ docker.io/unsopenhub/uns-openhub-controller:<version-or-latest>
 docker.io/unsopenhub/uns-postgres:<version-or-latest>
 ```
 
-Both repositories are public and do not require registry authentication. If an
-existing `.env` still has `UNS_IMAGE_REPOSITORY`, replace it with
+`uns-postgres` remains public and does not require registry authentication. If
+an existing `.env` still has `UNS_IMAGE_REPOSITORY`, replace it with
 `UNS_CONTROLLER_REPOSITORY` and `UNS_POSTGRES_REPOSITORY` as shown above. The
 Compose files retain safe defaults so regeneration does not overwrite the
 preserved `.env`.
