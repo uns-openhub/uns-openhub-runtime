@@ -25,10 +25,16 @@ bootstrap_repository="$(
 }
 python3 - "$version" <<'PY'
 import json
+import re
 import sys
 
 version = sys.argv[1]
 manifest = json.load(open("release/manifest.json"))
+if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", str(manifest.get("product", ""))):
+    raise SystemExit("Release manifest has no valid product identity")
+release_epoch = manifest.get("releaseEpoch")
+if not isinstance(release_epoch, int) or isinstance(release_epoch, bool) or release_epoch < 1:
+    raise SystemExit("Release manifest has no valid release epoch")
 if manifest.get("version") != version or manifest.get("tag") != version:
     raise SystemExit("Release manifest does not match VERSION")
 if not manifest.get("assets"):

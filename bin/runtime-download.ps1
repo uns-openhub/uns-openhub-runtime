@@ -10,12 +10,27 @@ $Version = (Get-Content (Join-Path $RuntimeDir "VERSION") -Raw).Trim()
 $Repository = (Get-Content (Join-Path $RuntimeDir "release/repository") -Raw).Trim()
 $Tag = (Get-Content (Join-Path $RuntimeDir "release/tag") -Raw).Trim()
 
-$Architecture = switch ($env:PROCESSOR_ARCHITECTURE.ToUpperInvariant()) {
-  "ARM64" { "arm64" }
-  "AMD64" { "amd64" }
-  default { throw "Unsupported Windows architecture: $env:PROCESSOR_ARCHITECTURE" }
+$Architecture = if ($env:PROCESSOR_ARCHITEW6432) {
+  # A 32-bit PowerShell process reports x86 in PROCESSOR_ARCHITECTURE; this
+  # variable preserves the native architecture under WOW64.
+  $env:PROCESSOR_ARCHITEW6432
+} elseif ($env:PROCESSOR_ARCHITECTURE) {
+  $env:PROCESSOR_ARCHITECTURE
+} else {
+  try {
+    [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+  } catch {
+    $null
+  }
 }
-$Asset = "$Tool-$Version-windows-$Architecture.exe"
+$Architecture = [string]$Architecture
+switch ($Architecture.ToUpperInvariant()) {
+  "ARM64" { $GoArch = "arm64" }
+  "AMD64" { $GoArch = "amd64" }
+  "X64" { $GoArch = "amd64" }
+  default { throw "Unsupported Windows architecture: $Architecture" }
+}
+$Asset = "$Tool-$Version-windows-$GoArch.exe"
 $ChecksumPath = Join-Path $RuntimeDir "release/SHA256SUMS"
 $ChecksumLine = Get-Content $ChecksumPath |
   Where-Object { $_ -match "^[0-9a-f]{64}  $([regex]::Escape($Asset))$" } |

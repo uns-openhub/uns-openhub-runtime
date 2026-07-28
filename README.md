@@ -1,10 +1,10 @@
-# UNS DataHub Controller Bundle (Registry)
+# UNS OpenHub Controller Bundle (Registry)
 
 > **Private initial release.** This generated repository is currently private.
 > It may be made public later, but public visibility does not change the
 > proprietary license or expose the private `uns-datahub-tools` source.
 
-This bundle runs the UNS DataHub Controller from registry images. It supports
+This bundle runs the UNS OpenHub Controller from registry images. It supports
 three common cases:
 
 - start only the local infrastructure
@@ -38,7 +38,7 @@ runtime version they install. It first tries that runtime release anonymously.
 If the runtime is
 private, it asks for a GitHub token using a hidden prompt and uses it only for
 the release API requests; the token is not stored. Use a fine-grained,
-expiring token limited to `uns-datahub-runtime` with read-only Contents
+expiring token limited to `uns-openhub-runtime` with read-only Contents
 permission.
 
 The bootstrap verifies the immutable offline runtime bundle, refuses an
@@ -67,7 +67,7 @@ Windows PowerShell:
 Invoke-WebRequest `
   https://github.com/uns-datahub/uns-datahub-bootstrap/releases/latest/download/install.ps1 `
   -OutFile install.ps1
-.\install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 & "$HOME\.local\bin\uns-bootstrap.exe" install
 ```
 
@@ -105,6 +105,8 @@ The wizard creates or updates `.env`, prepares local or Infisical settings, and
 prints the exact `docker compose` or `podman compose` commands to run next. For
 a new `.env`, it pins `UNS_TAG` to the image version recorded when this runtime
 was generated; an existing `.env` or explicit `UNS_TAG` override is preserved.
+Passwords and access tokens requested by the wizard use hidden terminal input;
+existing values can be kept without displaying them.
 
 Manual setup:
 
@@ -338,7 +340,7 @@ Synchronize a public or private runtime repository into a separate checkout:
 
 ```sh
 ./bin/uns runtime sync \
-  --repo https://github.com/uns-datahub/uns-datahub-runtime.git \
+  --repo https://github.com/uns-datahub/uns-openhub-runtime.git \
   --dir "$HOME/uns-datahub-runtime-github"
 ```
 
@@ -399,17 +401,24 @@ On Windows, prefer running `git pull` separately before:
 
 Git may not be able to replace the currently running `uns-*.exe`.
 
-Create an admin user after the controller is running:
+Create an admin user after infrastructure is running. The command starts a
+temporary controller tool container; the long-running controller service does
+not need to be running. Omit `--password` to enter and confirm it in a hidden
+prompt:
 
 ```sh
-./bin/uns admin create --email admin@example.com --password 'strongpass' --rules '#'
+./bin/uns admin create --email admin@example.com --rules '#'
 ```
 
 Reset an admin password:
 
 ```sh
-./bin/uns admin reset --email admin@example.com --password 'newpass'
+./bin/uns admin reset --email admin@example.com
 ```
+
+For unattended use, provide `UNS_ADMIN_PASSWORD` through the host's secret
+mechanism. The explicit `--password` flag remains available for compatibility,
+but can expose the value in shell history.
 
 Generate keys:
 
@@ -417,6 +426,9 @@ Generate keys:
 ./bin/uns gen-keys --kid key-2025-11 --activate
 ./bin/uns gen-keys --kid service-2025-11 --kind service --activate
 ```
+
+Key generation uses temporary controller tool containers and does not require
+the long-running controller service to be started.
 
 For Podman on SELinux hosts, set this in `.env`:
 
