@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   postgres:
-    image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsdatahub}/${UNS_POSTGRES_REPOSITORY:-uns-postgres}:${UNS_TAG:-latest}
+    image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsopenhub}/${UNS_POSTGRES_REPOSITORY:-uns-postgres}:${UNS_TAG:-latest}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-uns}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}

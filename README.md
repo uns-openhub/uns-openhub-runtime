@@ -120,8 +120,8 @@ cp .env.example .env
 
 ```env
 UNS_REGISTRY=docker.io
-UNS_REPO_PREFIX=unsdatahub
-UNS_CONTROLLER_REPOSITORY=uns-datahub-controller
+UNS_REPO_PREFIX=unsopenhub
+UNS_CONTROLLER_REPOSITORY=uns-openhub-controller
 UNS_POSTGRES_REPOSITORY=uns-postgres
 UNS_TAG=<controller/Postgres image version>
 CONFIG_FILE=config-example.json
@@ -130,21 +130,15 @@ CONFIG_FILE=config-example.json
 These defaults resolve to:
 
 ```text
-docker.io/unsdatahub/uns-datahub-controller:<version-or-latest>
-docker.io/unsdatahub/uns-postgres:<version-or-latest>
+docker.io/unsopenhub/uns-openhub-controller:<version-or-latest>
+docker.io/unsopenhub/uns-postgres:<version-or-latest>
 ```
 
-Authenticate each host before pulling the private controller image:
-
-```sh
-podman login -u unsdatahub docker.io
-```
-
-Use `docker login` instead when running Docker. The Postgres repository is
-public and does not require authentication. If an existing `.env` still has
-`UNS_IMAGE_REPOSITORY`, replace it with `UNS_CONTROLLER_REPOSITORY` and
-`UNS_POSTGRES_REPOSITORY` as shown above. The Compose files retain safe
-defaults so regeneration does not overwrite the preserved `.env`.
+Both repositories are public and do not require registry authentication. If an
+existing `.env` still has `UNS_IMAGE_REPOSITORY`, replace it with
+`UNS_CONTROLLER_REPOSITORY` and `UNS_POSTGRES_REPOSITORY` as shown above. The
+Compose files retain safe defaults so regeneration does not overwrite the
+preserved `.env`.
 
 3. For local runs without Infisical, keep `CONFIG_FILE=config-example.json`.
    Azure DevOps repository access is optional and can be configured manually

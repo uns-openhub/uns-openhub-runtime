@@ -89,13 +89,13 @@ PY
 }
 
 grep -Fx 'UNS_REGISTRY=docker.io' .env.example
-grep -Fx 'UNS_REPO_PREFIX=unsdatahub' .env.example
-grep -Fx 'UNS_CONTROLLER_REPOSITORY=uns-datahub-controller' .env.example
+grep -Fx 'UNS_REPO_PREFIX=unsopenhub' .env.example
+grep -Fx 'UNS_CONTROLLER_REPOSITORY=uns-openhub-controller' .env.example
 grep -Fx 'UNS_POSTGRES_REPOSITORY=uns-postgres' .env.example
 grep -Fx "UNS_TAG=$image_tag" .env.example
-grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsdatahub}/${UNS_CONTROLLER_REPOSITORY:-uns-datahub-controller}:${UNS_TAG:-latest}' \
+grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsopenhub}/${UNS_CONTROLLER_REPOSITORY:-uns-openhub-controller}:${UNS_TAG:-latest}' \
   docker-compose.controller.yml docker-compose.yml
-grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsdatahub}/${UNS_POSTGRES_REPOSITORY:-uns-postgres}:${UNS_TAG:-latest}' \
+grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsopenhub}/${UNS_POSTGRES_REPOSITORY:-uns-postgres}:${UNS_TAG:-latest}' \
   docker-compose.infra.yml docker-compose.yml
 
 if grep -R -E 'fra\.ocir\.io|fricdwfcid28' \

@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-Environment=UNS_CONTROLLER_REPOSITORY=uns-datahub-controller
+Environment=UNS_CONTROLLER_REPOSITORY=uns-openhub-controller
 EnvironmentFile=/etc/uns/controller.env
 ExecStart=/usr/bin/podman run --replace --name uns-controller --detach \
   -p 3200:3200 \
