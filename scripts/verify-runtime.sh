@@ -23,6 +23,11 @@ for path in paths:
 manifest = json.loads(Path("release/manifest.json").read_text(encoding="utf-8"))
 if manifest.get("schemaVersion") != 2:
     raise SystemExit("Unsupported release manifest schema")
+if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", str(manifest.get("product", ""))):
+    raise SystemExit("Release manifest product must use lowercase kebab-case")
+release_epoch = manifest.get("releaseEpoch")
+if not isinstance(release_epoch, int) or isinstance(release_epoch, bool) or release_epoch < 1:
+    raise SystemExit("Release manifest releaseEpoch must be a positive integer")
 if manifest.get("version") != version or manifest.get("tag") != version:
     raise SystemExit("Release manifest version/tag does not match VERSION")
 if manifest.get("imageTag") != image_tag:
@@ -115,6 +120,17 @@ for file in \
   bin/runtime-download.ps1; do
   [[ -s "$file" ]] || {
     echo "Missing runtime bootstrap file: $file" >&2
+    exit 1
+  }
+done
+
+for expected in \
+  'PROCESSOR_ARCHITEW6432' \
+  'PROCESSOR_ARCHITECTURE' \
+  '"AMD64" { $GoArch = "amd64" }' \
+  '"ARM64" { $GoArch = "arm64" }'; do
+  grep -F "$expected" bin/runtime-download.ps1 >/dev/null || {
+    echo "Runtime Windows downloader is missing architecture support: $expected" >&2
     exit 1
   }
 done
