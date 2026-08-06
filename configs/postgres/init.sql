@@ -1182,6 +1182,13 @@ CREATE TABLE IF NOT EXISTS public.object_id_relationship (
   source_object_id text NOT NULL,
   target_object_type text NOT NULL,
   target_object_id text NOT NULL,
+  scope_key text NULL,
+  source_stable_entity_id uuid NULL,
+  target_stable_entity_id uuid NULL,
+  endpoint_resolution_status text NOT NULL DEFAULT 'legacy',
+  endpoint_resolution_evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  endpoint_resolved_at timestamptz NULL,
+  endpoint_reviewed_by text NULL,
   source_uns_object_id integer NULL REFERENCES public.uns_object(id) ON DELETE SET NULL,
   target_uns_object_id integer NULL REFERENCES public.uns_object(id) ON DELETE SET NULL,
   source_full_topic text NULL,
@@ -1213,6 +1220,20 @@ ALTER TABLE public.object_id_relationship
   ADD COLUMN IF NOT EXISTS target_object_type text;
 ALTER TABLE public.object_id_relationship
   ADD COLUMN IF NOT EXISTS target_object_id text;
+ALTER TABLE public.object_id_relationship
+  ADD COLUMN IF NOT EXISTS scope_key text;
+ALTER TABLE public.object_id_relationship
+  ADD COLUMN IF NOT EXISTS source_stable_entity_id uuid;
+ALTER TABLE public.object_id_relationship
+  ADD COLUMN IF NOT EXISTS target_stable_entity_id uuid;
+ALTER TABLE public.object_id_relationship
+  ADD COLUMN IF NOT EXISTS endpoint_resolution_status text NOT NULL DEFAULT 'legacy';
+ALTER TABLE public.object_id_relationship
+  ADD COLUMN IF NOT EXISTS endpoint_resolution_evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE public.object_id_relationship
+  ADD COLUMN IF NOT EXISTS endpoint_resolved_at timestamptz;
+ALTER TABLE public.object_id_relationship
+  ADD COLUMN IF NOT EXISTS endpoint_reviewed_by text;
 ALTER TABLE public.object_id_relationship
   ADD COLUMN IF NOT EXISTS source_uns_object_id integer;
 ALTER TABLE public.object_id_relationship
@@ -1256,6 +1277,12 @@ CREATE INDEX IF NOT EXISTS idx_object_id_relationship_source
 
 CREATE INDEX IF NOT EXISTS idx_object_id_relationship_target
   ON public.object_id_relationship (target_object_type, target_object_id);
+
+CREATE INDEX IF NOT EXISTS idx_object_id_relationship_stable_source
+  ON public.object_id_relationship (scope_key, source_stable_entity_id, valid_from, valid_to);
+
+CREATE INDEX IF NOT EXISTS idx_object_id_relationship_stable_target
+  ON public.object_id_relationship (scope_key, target_stable_entity_id, valid_from, valid_to);
 
 CREATE INDEX IF NOT EXISTS idx_object_id_relationship_status
   ON public.object_id_relationship (status);
@@ -1566,6 +1593,1192 @@ CREATE INDEX IF NOT EXISTS idx_schema_audit_entity_created_at
 
 CREATE INDEX IF NOT EXISTS idx_schema_audit_created_at
   ON public.schema_audit (created_at DESC);
+
+-- === OPENHUB PLATFORM PACKAGE REGISTRY =====================================
+-- Package resources are immutable for a package id/version/digest. The
+-- installation row records the active version for one explicit tenant scope;
+-- platform_package_audit keeps the append-only apply history.
+CREATE TABLE IF NOT EXISTS public.platform_tenant (
+  tenant_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL UNIQUE,
+  display_name text NOT NULL,
+  status text NOT NULL DEFAULT 'active',
+  is_default boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT chk_platform_tenant_scope_key
+    CHECK (scope_key ~ '^tenant:[a-z0-9]+([._-][a-z0-9]+)*$'),
+  CONSTRAINT chk_platform_tenant_status
+    CHECK (status IN ('active', 'inactive'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_platform_tenant_default
+  ON public.platform_tenant (is_default)
+  WHERE is_default;
+
+INSERT INTO public.platform_tenant
+  (tenant_id, scope_key, display_name, status, is_default)
+VALUES
+  ('00000000-0000-0000-0000-000000000001', 'tenant:default', 'Default tenant', 'active', true)
+ON CONFLICT (scope_key) DO UPDATE SET
+  is_default = true,
+  updated_at = now();
+
+CREATE TABLE IF NOT EXISTS public.platform_package (
+  id text PRIMARY KEY,
+  kind text NOT NULL DEFAULT 'domain-pack',
+  display_name text NOT NULL,
+  description text NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT chk_platform_package_kind CHECK (kind IN ('domain-pack'))
+);
+
+CREATE TABLE IF NOT EXISTS public.platform_package_version (
+  package_id text NOT NULL REFERENCES public.platform_package(id) ON DELETE CASCADE,
+  version text NOT NULL,
+  digest text NOT NULL,
+  manifest_json jsonb NOT NULL,
+  content_size_bytes bigint NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (package_id, version),
+  CONSTRAINT chk_platform_package_version_digest
+    CHECK (digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_package_version_size
+    CHECK (content_size_bytes >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS public.platform_package_dependency (
+  package_id text NOT NULL,
+  package_version text NOT NULL,
+  dependency_package_id text NOT NULL,
+  dependency_version text NOT NULL,
+  requested_version_range text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (package_id, package_version, dependency_package_id),
+  FOREIGN KEY (package_id, package_version)
+    REFERENCES public.platform_package_version(package_id, version) ON DELETE CASCADE,
+  FOREIGN KEY (dependency_package_id, dependency_version)
+    REFERENCES public.platform_package_version(package_id, version) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_package_dependency_target
+  ON public.platform_package_dependency (dependency_package_id, dependency_version);
+
+CREATE TABLE IF NOT EXISTS public.platform_package_resource (
+  package_id text NOT NULL,
+  package_version text NOT NULL,
+  resource_key text NOT NULL,
+  resource_path text NOT NULL,
+  digest text NOT NULL,
+  content_size_bytes bigint NOT NULL,
+  content_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (package_id, package_version, resource_key),
+  FOREIGN KEY (package_id, package_version)
+    REFERENCES public.platform_package_version(package_id, version) ON DELETE CASCADE,
+  CONSTRAINT uq_platform_package_resource_path
+    UNIQUE (package_id, package_version, resource_path),
+  CONSTRAINT chk_platform_package_resource_digest
+    CHECK (digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_package_resource_size
+    CHECK (content_size_bytes >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS public.platform_package_installation (
+  scope_key text NOT NULL,
+  package_id text NOT NULL,
+  package_version text NOT NULL,
+  package_digest text NOT NULL,
+  profile_id text NOT NULL,
+  profile_digest text NOT NULL,
+  status text NOT NULL DEFAULT 'active',
+  installed_by text NULL,
+  installed_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, package_id),
+  FOREIGN KEY (package_id, package_version)
+    REFERENCES public.platform_package_version(package_id, version) ON DELETE RESTRICT,
+  CONSTRAINT chk_platform_package_installation_status
+    CHECK (status IN ('active', 'inactive', 'failed')),
+  CONSTRAINT chk_platform_package_installation_package_digest
+    CHECK (package_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_package_installation_profile_digest
+    CHECK (profile_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_package_installation_profile
+  ON public.platform_package_installation (scope_key, profile_id, status);
+
+CREATE TABLE IF NOT EXISTS public.platform_package_definition_ownership (
+  scope_key text NOT NULL,
+  definition_kind text NOT NULL,
+  definition_key text NOT NULL,
+  package_id text NOT NULL,
+  package_version text NOT NULL,
+  resource_key text NOT NULL,
+  resource_digest text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, definition_kind, definition_key),
+  FOREIGN KEY (package_id, package_version, resource_key)
+    REFERENCES public.platform_package_resource(package_id, package_version, resource_key) ON DELETE RESTRICT,
+  CONSTRAINT chk_platform_package_definition_kind
+    CHECK (definition_kind IN (
+      'asset', 'attribute', 'object_type', 'relationship', 'measurement_unit',
+      'state', 'event_type', 'action', 'view', 'navigation', 'policy'
+    )),
+  CONSTRAINT chk_platform_package_definition_resource_digest
+    CHECK (resource_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_package_definition_owner
+  ON public.platform_package_definition_ownership (package_id, package_version, resource_key);
+
+ALTER TABLE public.platform_package_definition_ownership
+  DROP CONSTRAINT IF EXISTS chk_platform_package_definition_kind;
+
+ALTER TABLE public.platform_package_definition_ownership
+  ADD CONSTRAINT chk_platform_package_definition_kind
+  CHECK (definition_kind IN (
+    'asset', 'attribute', 'object_type', 'relationship', 'measurement_unit',
+    'state', 'event_type', 'action', 'view', 'navigation', 'policy'
+  ));
+
+CREATE TABLE IF NOT EXISTS public.platform_schema_definition_projection (
+  package_id text NOT NULL,
+  package_version text NOT NULL,
+  definition_kind text NOT NULL,
+  qualified_key text NOT NULL,
+  source_key text NOT NULL,
+  legacy_key text NOT NULL,
+  resource_key text NOT NULL,
+  resource_digest text NOT NULL,
+  source_content_digest text NOT NULL,
+  projection_content_digest text NOT NULL,
+  status text NOT NULL DEFAULT 'active',
+  source_definition_json jsonb NOT NULL,
+  projected_definition_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (package_id, package_version, definition_kind, qualified_key),
+  UNIQUE (package_id, package_version, definition_kind, legacy_key),
+  FOREIGN KEY (package_id, package_version, resource_key)
+    REFERENCES public.platform_package_resource(package_id, package_version, resource_key) ON DELETE RESTRICT,
+  CONSTRAINT chk_platform_schema_definition_projection_kind
+    CHECK (definition_kind IN ('entity_type', 'attribute', 'relationship')),
+  CONSTRAINT chk_platform_schema_definition_projection_status
+    CHECK (status IN ('draft', 'active', 'deprecated')),
+  CONSTRAINT chk_platform_schema_definition_projection_resource_digest
+    CHECK (resource_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_schema_definition_projection_source_digest
+    CHECK (source_content_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_schema_definition_projection_content_digest
+    CHECK (projection_content_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_schema_definition_projection_qualified_key
+    CHECK (qualified_key ~ '^[a-z0-9]+(-[a-z0-9]+)*(\.[a-z0-9]+(-[a-z0-9]+)*)+$'),
+  CONSTRAINT chk_platform_schema_definition_projection_legacy_key
+    CHECK (legacy_key ~ '^[a-z0-9]+(-[a-z0-9]+)*$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_schema_definition_projection_lookup
+  ON public.platform_schema_definition_projection
+    (definition_kind, qualified_key, package_id, package_version);
+
+CREATE INDEX IF NOT EXISTS idx_platform_schema_definition_projection_legacy
+  ON public.platform_schema_definition_projection
+    (definition_kind, legacy_key, package_id, package_version);
+
+CREATE TABLE IF NOT EXISTS public.platform_schema_definition_alias (
+  package_id text NOT NULL,
+  package_version text NOT NULL,
+  definition_kind text NOT NULL,
+  qualified_key text NOT NULL,
+  alias text NOT NULL,
+  alias_kind text NOT NULL DEFAULT 'legacy_key',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (package_id, package_version, definition_kind, alias),
+  FOREIGN KEY (package_id, package_version, definition_kind, qualified_key)
+    REFERENCES public.platform_schema_definition_projection
+      (package_id, package_version, definition_kind, qualified_key)
+    ON DELETE CASCADE,
+  CONSTRAINT chk_platform_schema_definition_alias_kind
+    CHECK (alias_kind IN ('legacy_key'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_schema_definition_alias_target
+  ON public.platform_schema_definition_alias (definition_kind, qualified_key);
+
+CREATE TABLE IF NOT EXISTS public.platform_semantic_definition (
+  package_id text NOT NULL,
+  package_version text NOT NULL,
+  definition_kind text NOT NULL,
+  qualified_key text NOT NULL,
+  local_key text NOT NULL,
+  resource_key text NOT NULL,
+  resource_digest text NOT NULL,
+  content_digest text NOT NULL,
+  status text NOT NULL DEFAULT 'active',
+  definition_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (package_id, package_version, definition_kind, qualified_key),
+  FOREIGN KEY (package_id, package_version, resource_key)
+    REFERENCES public.platform_package_resource(package_id, package_version, resource_key) ON DELETE RESTRICT,
+  CONSTRAINT chk_platform_semantic_definition_kind
+    CHECK (definition_kind IN ('state', 'event_type', 'action', 'view', 'navigation', 'policy')),
+  CONSTRAINT chk_platform_semantic_definition_status
+    CHECK (status IN ('draft', 'active', 'deprecated')),
+  CONSTRAINT chk_platform_semantic_definition_resource_digest
+    CHECK (resource_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_semantic_definition_content_digest
+    CHECK (content_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_semantic_definition_qualified_key
+    CHECK (qualified_key ~ '^[a-z0-9]+(-[a-z0-9]+)*(\.[a-z0-9]+(-[a-z0-9]+)*)+$'),
+  CONSTRAINT chk_platform_semantic_definition_local_key
+    CHECK (local_key ~ '^[a-z0-9]+(-[a-z0-9]+)*$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_semantic_definition_lookup
+  ON public.platform_semantic_definition (definition_kind, qualified_key, package_id, package_version);
+
+CREATE TABLE IF NOT EXISTS public.platform_semantic_definition_alias (
+  package_id text NOT NULL,
+  package_version text NOT NULL,
+  definition_kind text NOT NULL,
+  qualified_key text NOT NULL,
+  alias text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (package_id, package_version, definition_kind, alias),
+  FOREIGN KEY (package_id, package_version, definition_kind, qualified_key)
+    REFERENCES public.platform_semantic_definition(package_id, package_version, definition_kind, qualified_key)
+    ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_semantic_definition_alias_target
+  ON public.platform_semantic_definition_alias (definition_kind, qualified_key);
+
+CREATE TABLE IF NOT EXISTS public.platform_semantic_definition_overlay (
+  scope_key text NOT NULL,
+  definition_kind text NOT NULL,
+  qualified_key text NOT NULL,
+  base_package_id text NOT NULL,
+  base_package_version text NOT NULL,
+  overlay_json jsonb NOT NULL,
+  content_digest text NOT NULL,
+  updated_by text NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, definition_kind, qualified_key),
+  FOREIGN KEY (base_package_id, base_package_version, definition_kind, qualified_key)
+    REFERENCES public.platform_semantic_definition(package_id, package_version, definition_kind, qualified_key)
+    ON DELETE RESTRICT,
+  CONSTRAINT chk_platform_semantic_definition_overlay_digest
+    CHECK (content_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_semantic_definition_overlay_base
+  ON public.platform_semantic_definition_overlay
+    (base_package_id, base_package_version, definition_kind, qualified_key);
+
+CREATE TABLE IF NOT EXISTS public.platform_package_audit (
+  id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  scope_key text NOT NULL,
+  event_type text NOT NULL,
+  profile_id text NULL,
+  profile_digest text NULL,
+  package_id text NULL,
+  package_version text NULL,
+  package_digest text NULL,
+  operation_id uuid NULL,
+  request_digest text NULL,
+  changed_by text NULL,
+  details_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT chk_platform_package_audit_request_digest
+    CHECK (request_digest IS NULL OR request_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+ALTER TABLE public.platform_package_audit
+  ADD COLUMN IF NOT EXISTS operation_id uuid;
+ALTER TABLE public.platform_package_audit
+  ADD COLUMN IF NOT EXISTS request_digest text;
+
+ALTER TABLE public.platform_package_audit
+  DROP CONSTRAINT IF EXISTS chk_platform_package_audit_request_digest;
+ALTER TABLE public.platform_package_audit
+  ADD CONSTRAINT chk_platform_package_audit_request_digest
+  CHECK (request_digest IS NULL OR request_digest ~ '^sha256:[0-9a-f]{64}$');
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_platform_package_audit_scope_operation
+  ON public.platform_package_audit (scope_key, operation_id)
+  WHERE operation_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_platform_package_audit_scope_created_at
+  ON public.platform_package_audit (scope_key, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_platform_package_audit_package_created_at
+  ON public.platform_package_audit (package_id, package_version, created_at DESC);
+
+-- P2.5 compatibility migration: the 1.x setup path had one implicit
+-- controller scope. Preserve its data under the explicit default tenant before
+-- tenant and activation foreign keys are validated.
+UPDATE public.platform_package_installation
+SET scope_key = 'tenant:default'
+WHERE scope_key = 'controller:default';
+
+UPDATE public.platform_package_definition_ownership
+SET scope_key = 'tenant:default'
+WHERE scope_key = 'controller:default';
+
+UPDATE public.platform_semantic_definition_overlay
+SET scope_key = 'tenant:default'
+WHERE scope_key = 'controller:default';
+
+UPDATE public.platform_package_audit
+SET scope_key = 'tenant:default'
+WHERE scope_key = 'controller:default';
+
+INSERT INTO public.platform_tenant (scope_key, display_name)
+SELECT scope_key, scope_key
+FROM (
+  SELECT scope_key FROM public.platform_package_installation
+  UNION
+  SELECT scope_key FROM public.platform_package_definition_ownership
+  UNION
+  SELECT scope_key FROM public.platform_semantic_definition_overlay
+  UNION
+  SELECT scope_key FROM public.platform_package_audit
+) existing_scopes
+ON CONFLICT (scope_key) DO NOTHING;
+
+ALTER TABLE public.platform_package_definition_ownership
+  DROP CONSTRAINT IF EXISTS fk_platform_package_definition_ownership_installation;
+
+ALTER TABLE public.platform_semantic_definition_overlay
+  DROP CONSTRAINT IF EXISTS fk_platform_semantic_definition_overlay_installation;
+
+ALTER TABLE public.platform_package_installation
+  DROP CONSTRAINT IF EXISTS uq_platform_package_installation_exact_version;
+
+ALTER TABLE public.platform_package_installation
+  ADD CONSTRAINT uq_platform_package_installation_exact_version
+  UNIQUE (scope_key, package_id, package_version);
+
+ALTER TABLE public.platform_package_installation
+  DROP CONSTRAINT IF EXISTS fk_platform_package_installation_tenant;
+
+ALTER TABLE public.platform_package_installation
+  ADD CONSTRAINT fk_platform_package_installation_tenant
+  FOREIGN KEY (scope_key)
+  REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT
+  NOT VALID;
+
+ALTER TABLE public.platform_package_installation
+  VALIDATE CONSTRAINT fk_platform_package_installation_tenant;
+
+ALTER TABLE public.platform_package_definition_ownership
+  ADD CONSTRAINT fk_platform_package_definition_ownership_installation
+  FOREIGN KEY (scope_key, package_id, package_version)
+  REFERENCES public.platform_package_installation(scope_key, package_id, package_version)
+  ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+  NOT VALID;
+
+ALTER TABLE public.platform_package_definition_ownership
+  VALIDATE CONSTRAINT fk_platform_package_definition_ownership_installation;
+
+ALTER TABLE public.platform_semantic_definition_overlay
+  ADD CONSTRAINT fk_platform_semantic_definition_overlay_installation
+  FOREIGN KEY (scope_key, base_package_id, base_package_version)
+  REFERENCES public.platform_package_installation(scope_key, package_id, package_version)
+  ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+  NOT VALID;
+
+ALTER TABLE public.platform_semantic_definition_overlay
+  VALIDATE CONSTRAINT fk_platform_semantic_definition_overlay_installation;
+
+ALTER TABLE public.platform_package_audit
+  DROP CONSTRAINT IF EXISTS fk_platform_package_audit_tenant;
+
+ALTER TABLE public.platform_package_audit
+  ADD CONSTRAINT fk_platform_package_audit_tenant
+  FOREIGN KEY (scope_key)
+  REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT
+  NOT VALID;
+
+ALTER TABLE public.platform_package_audit
+  VALIDATE CONSTRAINT fk_platform_package_audit_tenant;
+
+-- === OPENHUB PROVIDER ADD-ON CATALOG ======================================
+-- Executable providers are cataloged separately from declarative domain
+-- packages. A provider id/version is immutable by artifact digest. Tenant
+-- installation state references an exact reviewed catalog artifact and cannot
+-- enter an active runtime state without recorded permission review evidence.
+CREATE TABLE IF NOT EXISTS public.provider_addon (
+  id text PRIMARY KEY,
+  package_name text NOT NULL,
+  display_name text NOT NULL,
+  description text NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT chk_provider_addon_id
+    CHECK (id ~ '^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$'),
+  CONSTRAINT chk_provider_addon_package_name
+    CHECK (length(btrim(package_name)) > 0),
+  CONSTRAINT chk_provider_addon_display_name
+    CHECK (length(btrim(display_name)) > 0)
+);
+
+CREATE TABLE IF NOT EXISTS public.provider_addon_version (
+  provider_id text NOT NULL,
+  version text NOT NULL,
+  artifact_digest text NOT NULL,
+  manifest_json jsonb NOT NULL,
+  controller_compatibility text NOT NULL,
+  provider_api text NOT NULL,
+  configuration_schema_path text NOT NULL,
+  configuration_schema_digest text NOT NULL,
+  configuration_schema_json jsonb NOT NULL,
+  content_size_bytes bigint NOT NULL,
+  reviewed_by text NOT NULL,
+  reviewed_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (provider_id, version),
+  UNIQUE (provider_id, version, artifact_digest),
+  CONSTRAINT fk_provider_addon_version_provider
+    FOREIGN KEY (provider_id) REFERENCES public.provider_addon(id) ON DELETE CASCADE,
+  CONSTRAINT chk_provider_addon_version_digest
+    CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_version_config_digest
+    CHECK (configuration_schema_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_version_provider_api
+    CHECK (provider_api ~ '^[1-9][0-9]*$'),
+  CONSTRAINT chk_provider_addon_version_manifest_json
+    CHECK (jsonb_typeof(manifest_json) = 'object'),
+  CONSTRAINT chk_provider_addon_version_config_json
+    CHECK (jsonb_typeof(configuration_schema_json) = 'object'),
+  CONSTRAINT chk_provider_addon_version_size
+    CHECK (content_size_bytes >= 0),
+  CONSTRAINT chk_provider_addon_version_reviewer
+    CHECK (length(btrim(reviewed_by)) > 0)
+);
+
+CREATE TABLE IF NOT EXISTS public.provider_addon_source_lock (
+  provider_id text NOT NULL,
+  provider_version text NOT NULL,
+  artifact_digest text NOT NULL,
+  source_kind text NOT NULL,
+  lock_digest text NOT NULL,
+  lock_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (provider_id, provider_version),
+  CONSTRAINT fk_provider_addon_source_lock_version
+    FOREIGN KEY (provider_id, provider_version, artifact_digest)
+    REFERENCES public.provider_addon_version(provider_id, version, artifact_digest) ON DELETE CASCADE,
+  CONSTRAINT chk_provider_addon_source_lock_kind
+    CHECK (source_kind IN ('repository', 'offline', 'oci')),
+  CONSTRAINT chk_provider_addon_source_lock_artifact_digest
+    CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_source_lock_digest
+    CHECK (lock_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_source_lock_json
+    CHECK (jsonb_typeof(lock_json) = 'object')
+);
+
+CREATE OR REPLACE FUNCTION public.reject_provider_addon_source_lock_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'provider add-on source locks are immutable'
+    USING ERRCODE = '55000';
+END
+$$;
+
+DROP TRIGGER IF EXISTS trg_provider_addon_source_lock_immutable
+  ON public.provider_addon_source_lock;
+CREATE TRIGGER trg_provider_addon_source_lock_immutable
+  BEFORE UPDATE OR DELETE ON public.provider_addon_source_lock
+  FOR EACH ROW EXECUTE FUNCTION public.reject_provider_addon_source_lock_mutation();
+
+CREATE TABLE IF NOT EXISTS public.provider_addon_capability (
+  provider_id text NOT NULL,
+  provider_version text NOT NULL,
+  capability_id text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (provider_id, provider_version, capability_id),
+  CONSTRAINT fk_provider_addon_capability_version
+    FOREIGN KEY (provider_id, provider_version)
+    REFERENCES public.provider_addon_version(provider_id, version) ON DELETE CASCADE,
+  CONSTRAINT chk_provider_addon_capability_id
+    CHECK (capability_id ~ '^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_addon_capability_lookup
+  ON public.provider_addon_capability (capability_id, provider_id, provider_version);
+
+CREATE TABLE IF NOT EXISTS public.provider_addon_permission_requirement (
+  provider_id text NOT NULL,
+  provider_version text NOT NULL,
+  permission_id text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (provider_id, provider_version, permission_id),
+  CONSTRAINT fk_provider_addon_permission_version
+    FOREIGN KEY (provider_id, provider_version)
+    REFERENCES public.provider_addon_version(provider_id, version) ON DELETE CASCADE,
+  CONSTRAINT chk_provider_addon_permission_id
+    CHECK (permission_id ~ '^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$')
+);
+
+CREATE TABLE IF NOT EXISTS public.provider_addon_installation (
+  scope_key text NOT NULL,
+  provider_id text NOT NULL,
+  provider_version text NOT NULL,
+  artifact_digest text NOT NULL,
+  status text NOT NULL DEFAULT 'planned',
+  permission_review_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  permission_reviewed_by text NULL,
+  permission_reviewed_at timestamptz NULL,
+  installed_by text NULL,
+  installed_at timestamptz NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, provider_id),
+  CONSTRAINT fk_provider_addon_installation_tenant
+    FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_provider_addon_installation_version
+    FOREIGN KEY (provider_id, provider_version, artifact_digest)
+    REFERENCES public.provider_addon_version(provider_id, version, artifact_digest) ON DELETE RESTRICT,
+  CONSTRAINT chk_provider_addon_installation_status
+    CHECK (status IN ('planned', 'installed', 'stopped', 'failed', 'removed')),
+  CONSTRAINT chk_provider_addon_installation_digest
+    CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_installation_review_json
+    CHECK (jsonb_typeof(permission_review_json) = 'array'),
+  CONSTRAINT chk_provider_addon_installation_review_pair
+    CHECK (
+      (permission_reviewed_by IS NULL AND permission_reviewed_at IS NULL)
+      OR (length(btrim(permission_reviewed_by)) > 0 AND permission_reviewed_at IS NOT NULL)
+    ),
+  CONSTRAINT chk_provider_addon_installation_active_review
+    CHECK (
+      status NOT IN ('installed', 'stopped')
+      OR (permission_reviewed_by IS NOT NULL AND permission_reviewed_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_addon_installation_status
+  ON public.provider_addon_installation (scope_key, status, provider_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_provider_addon_installation_exact_artifact
+  ON public.provider_addon_installation
+    (scope_key, provider_id, provider_version, artifact_digest);
+
+-- Provider runtimes receive an opaque controller-owned process namespace and
+-- filesystem isolation key. The binding is immutable: lifecycle operations
+-- can stop or remove only this exact tenant/provider/artifact unit and must not
+-- accept a provider-supplied path or process name.
+CREATE TABLE IF NOT EXISTS public.provider_addon_runtime_binding (
+  scope_key text NOT NULL,
+  provider_id text NOT NULL,
+  provider_version text NOT NULL,
+  artifact_digest text NOT NULL,
+  runtime_unit_id text NOT NULL,
+  process_name text NOT NULL,
+  isolation_key text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, provider_id),
+  UNIQUE (runtime_unit_id),
+  UNIQUE (process_name),
+  UNIQUE (isolation_key),
+  CONSTRAINT fk_provider_addon_runtime_binding_installation
+    FOREIGN KEY (scope_key, provider_id, provider_version, artifact_digest)
+    REFERENCES public.provider_addon_installation
+      (scope_key, provider_id, provider_version, artifact_digest) ON DELETE RESTRICT,
+  CONSTRAINT chk_provider_addon_runtime_binding_unit
+    CHECK (runtime_unit_id ~ '^provider-runtime:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_runtime_binding_process
+    CHECK (process_name ~ '^openhub-provider-[0-9a-f]{32}$'),
+  CONSTRAINT chk_provider_addon_runtime_binding_isolation
+    CHECK (isolation_key ~ '^[0-9a-f]{64}$')
+);
+
+CREATE OR REPLACE FUNCTION public.reject_provider_addon_runtime_binding_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'provider add-on runtime bindings are immutable'
+    USING ERRCODE = '55000';
+END
+$$;
+
+DROP TRIGGER IF EXISTS trg_provider_addon_runtime_binding_immutable
+  ON public.provider_addon_runtime_binding;
+CREATE TRIGGER trg_provider_addon_runtime_binding_immutable
+  BEFORE UPDATE OR DELETE ON public.provider_addon_runtime_binding
+  FOR EACH ROW EXECUTE FUNCTION public.reject_provider_addon_runtime_binding_mutation();
+
+CREATE TABLE IF NOT EXISTS public.provider_addon_permission_review (
+  scope_key text NOT NULL,
+  provider_id text NOT NULL,
+  provider_version text NOT NULL,
+  artifact_digest text NOT NULL,
+  plan_digest text NOT NULL,
+  permission_set_digest text NOT NULL,
+  permissions_json jsonb NOT NULL,
+  reviewed_by text NOT NULL,
+  reviewed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, provider_id, plan_digest),
+  UNIQUE (scope_key, provider_id, provider_version, artifact_digest, plan_digest),
+  CONSTRAINT fk_provider_addon_permission_review_tenant
+    FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_provider_addon_permission_review_version
+    FOREIGN KEY (provider_id, provider_version, artifact_digest)
+    REFERENCES public.provider_addon_version(provider_id, version, artifact_digest) ON DELETE RESTRICT,
+  CONSTRAINT chk_provider_addon_permission_review_plan_digest
+    CHECK (plan_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_permission_review_set_digest
+    CHECK (permission_set_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_permission_review_json
+    CHECK (jsonb_typeof(permissions_json) = 'array'),
+  CONSTRAINT chk_provider_addon_permission_review_actor
+    CHECK (length(btrim(reviewed_by)) > 0)
+);
+
+CREATE TABLE IF NOT EXISTS public.provider_addon_operation (
+  scope_key text NOT NULL,
+  operation_id uuid NOT NULL,
+  operation_kind text NOT NULL,
+  provider_id text NOT NULL,
+  provider_version text NOT NULL,
+  artifact_digest text NOT NULL,
+  request_digest text NOT NULL,
+  result_json jsonb NOT NULL,
+  changed_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, operation_id),
+  CONSTRAINT fk_provider_addon_operation_tenant
+    FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_provider_addon_operation_version
+    FOREIGN KEY (provider_id, provider_version, artifact_digest)
+    REFERENCES public.provider_addon_version(provider_id, version, artifact_digest) ON DELETE RESTRICT,
+  CONSTRAINT chk_provider_addon_operation_kind
+    CHECK (operation_kind IN (
+      'permission_review', 'credential_issue', 'lifecycle_stop', 'lifecycle_remove'
+    )),
+  CONSTRAINT chk_provider_addon_operation_request_digest
+    CHECK (request_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_operation_result_json
+    CHECK (jsonb_typeof(result_json) = 'object'),
+  CONSTRAINT chk_provider_addon_operation_actor
+    CHECK (length(btrim(changed_by)) > 0)
+);
+
+-- CREATE TABLE IF NOT EXISTS does not evolve an existing P4.4 constraint.
+-- Recreate only the operation-kind check so upgrades accept the two P4.8
+-- lifecycle receipts while preserving every immutable operation row.
+ALTER TABLE public.provider_addon_operation
+  DROP CONSTRAINT IF EXISTS chk_provider_addon_operation_kind;
+ALTER TABLE public.provider_addon_operation
+  ADD CONSTRAINT chk_provider_addon_operation_kind
+  CHECK (operation_kind IN (
+    'permission_review', 'credential_issue', 'lifecycle_stop', 'lifecycle_remove'
+  ));
+
+CREATE OR REPLACE FUNCTION public.reject_provider_addon_immutable_evidence_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'provider add-on review and operation evidence is immutable'
+    USING ERRCODE = '55000';
+END
+$$;
+
+DROP TRIGGER IF EXISTS trg_provider_addon_permission_review_immutable
+  ON public.provider_addon_permission_review;
+CREATE TRIGGER trg_provider_addon_permission_review_immutable
+  BEFORE UPDATE OR DELETE ON public.provider_addon_permission_review
+  FOR EACH ROW EXECUTE FUNCTION public.reject_provider_addon_immutable_evidence_mutation();
+
+DROP TRIGGER IF EXISTS trg_provider_addon_operation_immutable
+  ON public.provider_addon_operation;
+CREATE TRIGGER trg_provider_addon_operation_immutable
+  BEFORE UPDATE OR DELETE ON public.provider_addon_operation
+  FOR EACH ROW EXECUTE FUNCTION public.reject_provider_addon_immutable_evidence_mutation();
+
+CREATE TABLE IF NOT EXISTS public.provider_addon_service_credential (
+  credential_id uuid PRIMARY KEY,
+  credential_reference text NOT NULL UNIQUE,
+  scope_key text NOT NULL,
+  provider_id text NOT NULL,
+  provider_version text NOT NULL,
+  artifact_digest text NOT NULL,
+  plan_digest text NOT NULL,
+  token_hash text NOT NULL UNIQUE,
+  permission_set_digest text NOT NULL,
+  permissions_json jsonb NOT NULL,
+  issued_by text NOT NULL,
+  issued_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  revoked_by text NULL,
+  revoked_at timestamptz NULL,
+  CONSTRAINT fk_provider_addon_service_credential_review
+    FOREIGN KEY (scope_key, provider_id, provider_version, artifact_digest, plan_digest)
+    REFERENCES public.provider_addon_permission_review
+      (scope_key, provider_id, provider_version, artifact_digest, plan_digest) ON DELETE RESTRICT,
+  CONSTRAINT chk_provider_addon_service_credential_reference
+    CHECK (credential_reference ~ '^provider-credential:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'),
+  CONSTRAINT chk_provider_addon_service_credential_hash
+    CHECK (token_hash ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_service_credential_set_digest
+    CHECK (permission_set_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_service_credential_permissions
+    CHECK (jsonb_typeof(permissions_json) = 'array'),
+  CONSTRAINT chk_provider_addon_service_credential_actor
+    CHECK (length(btrim(issued_by)) > 0),
+  CONSTRAINT chk_provider_addon_service_credential_expiry
+    CHECK (expires_at > issued_at),
+  CONSTRAINT chk_provider_addon_service_credential_revocation_pair
+    CHECK (
+      (revoked_by IS NULL AND revoked_at IS NULL)
+      OR (length(btrim(revoked_by)) > 0 AND revoked_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_addon_service_credential_active
+  ON public.provider_addon_service_credential (scope_key, provider_id, expires_at)
+  WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS public.provider_addon_audit (
+  id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  scope_key text NULL,
+  provider_id text NOT NULL,
+  provider_version text NOT NULL,
+  artifact_digest text NOT NULL,
+  event_type text NOT NULL,
+  changed_by text NOT NULL,
+  details_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT fk_provider_addon_audit_tenant
+    FOREIGN KEY (scope_key) REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  CONSTRAINT fk_provider_addon_audit_version
+    FOREIGN KEY (provider_id, provider_version, artifact_digest)
+    REFERENCES public.provider_addon_version(provider_id, version, artifact_digest) ON DELETE RESTRICT,
+  CONSTRAINT chk_provider_addon_audit_digest
+    CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_provider_addon_audit_actor
+    CHECK (length(btrim(changed_by)) > 0),
+  CONSTRAINT chk_provider_addon_audit_details
+    CHECK (jsonb_typeof(details_json) = 'object')
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_addon_audit_provider_created_at
+  ON public.provider_addon_audit (provider_id, provider_version, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_provider_addon_audit_scope_created_at
+  ON public.provider_addon_audit (scope_key, created_at DESC)
+  WHERE scope_key IS NOT NULL;
+
+-- === OPENHUB STABLE ENTITY AND PLACEMENT FOUNDATION ========================
+-- Phase 3 begins additively: canonical entity identity is independent from
+-- namespace placement, while uns_object remains the active 1.x compatibility
+-- representation until a later reviewed backfill and dual-write slice.
+CREATE TABLE IF NOT EXISTS public.entity (
+  stable_entity_id uuid PRIMARY KEY,
+  scope_key text NOT NULL,
+  entity_type_key text NOT NULL,
+  display_name text NULL,
+  status text NOT NULL DEFAULT 'active',
+  identity_source text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, stable_entity_id),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_type_key
+    CHECK (entity_type_key ~ '^[a-z0-9]+(-[a-z0-9]+)*(\.[a-z0-9]+(-[a-z0-9]+)*)+$'),
+  CONSTRAINT chk_entity_status
+    CHECK (status IN ('active', 'archived', 'superseded')),
+  CONSTRAINT chk_entity_identity_source
+    CHECK (length(btrim(identity_source)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_scope_type_status
+  ON public.entity (scope_key, entity_type_key, status);
+
+CREATE TABLE IF NOT EXISTS public.entity_external_identity (
+  external_identity_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  stable_entity_id uuid NOT NULL,
+  provider_id text NOT NULL,
+  external_system text NOT NULL,
+  external_type text NOT NULL,
+  external_id text NOT NULL,
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  verified_at timestamptz NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, provider_id, external_system, external_type, external_id),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_external_identity_provider
+    CHECK (length(btrim(provider_id)) > 0),
+  CONSTRAINT chk_entity_external_identity_system
+    CHECK (length(btrim(external_system)) > 0),
+  CONSTRAINT chk_entity_external_identity_type
+    CHECK (length(btrim(external_type)) > 0),
+  CONSTRAINT chk_entity_external_identity_value
+    CHECK (length(btrim(external_id)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_external_identity_entity
+  ON public.entity_external_identity (scope_key, stable_entity_id);
+
+CREATE TABLE IF NOT EXISTS public.namespace_node (
+  namespace_node_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  parent_namespace_node_id uuid NULL,
+  segment text NOT NULL,
+  full_path text NOT NULL,
+  projection_kind text NOT NULL DEFAULT 'legacy_uns',
+  status text NOT NULL DEFAULT 'active',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, namespace_node_id),
+  UNIQUE (scope_key, full_path),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, parent_namespace_node_id)
+    REFERENCES public.namespace_node(scope_key, namespace_node_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_namespace_node_segment
+    CHECK (length(btrim(segment)) > 0 AND position('/' IN segment) = 0),
+  CONSTRAINT chk_namespace_node_full_path
+    CHECK (
+      length(btrim(full_path)) > 0
+      AND full_path = btrim(full_path)
+      AND full_path !~ '(^/|/$|//)'
+    ),
+  CONSTRAINT chk_namespace_node_projection_kind
+    CHECK (projection_kind IN ('legacy_uns', 'provider', 'curated')),
+  CONSTRAINT chk_namespace_node_status
+    CHECK (status IN ('active', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_namespace_node_parent
+  ON public.namespace_node (scope_key, parent_namespace_node_id);
+
+CREATE TABLE IF NOT EXISTS public.entity_placement (
+  placement_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  stable_entity_id uuid NOT NULL,
+  namespace_node_id uuid NOT NULL,
+  placement_kind text NOT NULL DEFAULT 'primary',
+  valid_from timestamptz NOT NULL,
+  valid_to timestamptz NULL,
+  source text NOT NULL,
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  created_by text NULL,
+  UNIQUE (scope_key, placement_id),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, namespace_node_id)
+    REFERENCES public.namespace_node(scope_key, namespace_node_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_placement_kind
+    CHECK (placement_kind IN ('primary', 'alias')),
+  CONSTRAINT chk_entity_placement_interval
+    CHECK (valid_to IS NULL OR valid_to > valid_from),
+  CONSTRAINT chk_entity_placement_source
+    CHECK (length(btrim(source)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_placement_entity_history
+  ON public.entity_placement (scope_key, stable_entity_id, valid_from DESC, valid_to DESC NULLS FIRST);
+
+CREATE INDEX IF NOT EXISTS idx_entity_placement_namespace_history
+  ON public.entity_placement (scope_key, namespace_node_id, valid_from DESC, valid_to DESC NULLS FIRST);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_entity_placement_current_primary_entity
+  ON public.entity_placement (scope_key, stable_entity_id)
+  WHERE valid_to IS NULL AND placement_kind = 'primary';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_entity_placement_current_primary_namespace
+  ON public.entity_placement (scope_key, namespace_node_id)
+  WHERE valid_to IS NULL AND placement_kind = 'primary';
+
+CREATE TABLE IF NOT EXISTS public.entity_migration_ledger (
+  migration_ledger_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  source_table text NOT NULL,
+  source_primary_key bigint NOT NULL,
+  rule_version integer NOT NULL,
+  source_digest text NOT NULL,
+  first_plan_digest text NOT NULL,
+  last_plan_digest text NOT NULL,
+  first_source_outcome text NOT NULL,
+  last_source_outcome text NOT NULL,
+  last_apply_outcome text NOT NULL,
+  stable_entity_id uuid NULL,
+  evidence_json jsonb NOT NULL,
+  last_result_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  attempt_count integer NOT NULL DEFAULT 1,
+  first_reviewed_at timestamptz NOT NULL,
+  last_reviewed_at timestamptz NOT NULL,
+  last_reviewed_by text NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, source_table, source_primary_key, rule_version, source_digest),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_migration_ledger_source
+    CHECK (source_table = 'uns_object'),
+  CONSTRAINT chk_entity_migration_ledger_rule
+    CHECK (rule_version > 0),
+  CONSTRAINT chk_entity_migration_ledger_source_digest
+    CHECK (source_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_entity_migration_ledger_first_plan_digest
+    CHECK (first_plan_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_entity_migration_ledger_last_plan_digest
+    CHECK (last_plan_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_entity_migration_ledger_source_outcome
+    CHECK (
+      first_source_outcome IN ('ready', 'migrated')
+      AND last_source_outcome IN ('ready', 'migrated')
+    ),
+  CONSTRAINT chk_entity_migration_ledger_apply_outcome
+    CHECK (last_apply_outcome IN ('applied', 'unchanged')),
+  CONSTRAINT chk_entity_migration_ledger_attempt_count
+    CHECK (attempt_count > 0),
+  CONSTRAINT chk_entity_migration_ledger_review_order
+    CHECK (last_reviewed_at >= first_reviewed_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_migration_ledger_entity
+  ON public.entity_migration_ledger (scope_key, stable_entity_id, last_reviewed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_entity_migration_ledger_review
+  ON public.entity_migration_ledger (scope_key, last_apply_outcome, last_reviewed_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.entity_compatibility_outbox (
+  outbox_event_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  event_key text NOT NULL,
+  event_type text NOT NULL,
+  source_table text NOT NULL,
+  source_primary_key bigint NOT NULL,
+  stable_entity_id uuid NULL,
+  source_digest text NOT NULL,
+  source_outcome text NOT NULL,
+  sync_outcome text NOT NULL,
+  delivery_status text NOT NULL DEFAULT 'pending',
+  payload_json jsonb NOT NULL,
+  last_error_code text NULL,
+  attempt_count integer NOT NULL DEFAULT 1,
+  first_observed_at timestamptz NOT NULL,
+  last_observed_at timestamptz NOT NULL,
+  published_at timestamptz NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, event_key),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_compatibility_outbox_event_key
+    CHECK (event_key ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_entity_compatibility_outbox_event_type
+    CHECK (event_type IN ('legacy_object_id_upserted')),
+  CONSTRAINT chk_entity_compatibility_outbox_source
+    CHECK (source_table = 'uns_object'),
+  CONSTRAINT chk_entity_compatibility_outbox_source_digest
+    CHECK (source_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_entity_compatibility_outbox_source_outcome
+    CHECK (source_outcome IN ('ready', 'migrated', 'skipped', 'unmapped', 'ambiguous', 'failed')),
+  CONSTRAINT chk_entity_compatibility_outbox_sync_outcome
+    CHECK (sync_outcome IN ('synchronized', 'deferred', 'failed')),
+  CONSTRAINT chk_entity_compatibility_outbox_delivery
+    CHECK (delivery_status IN ('pending', 'published', 'failed')),
+  CONSTRAINT chk_entity_compatibility_outbox_attempt_count
+    CHECK (attempt_count > 0),
+  CONSTRAINT chk_entity_compatibility_outbox_observed_order
+    CHECK (last_observed_at >= first_observed_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_compatibility_outbox_delivery
+  ON public.entity_compatibility_outbox (delivery_status, created_at, outbox_event_id);
+
+CREATE INDEX IF NOT EXISTS idx_entity_compatibility_outbox_source
+  ON public.entity_compatibility_outbox (scope_key, source_primary_key, last_observed_at DESC);
+
+-- Stable relationship endpoints are additive to the 1.x object-type/object-id
+-- columns. Nullable tenant-local foreign keys allow reviewed migration without
+-- making legacy relationship rows unreadable while an endpoint is unresolved.
+ALTER TABLE public.object_id_relationship
+  DROP CONSTRAINT IF EXISTS fk_object_id_relationship_scope;
+ALTER TABLE public.object_id_relationship
+  ADD CONSTRAINT fk_object_id_relationship_scope
+  FOREIGN KEY (scope_key)
+  REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT
+  NOT VALID;
+ALTER TABLE public.object_id_relationship
+  VALIDATE CONSTRAINT fk_object_id_relationship_scope;
+
+ALTER TABLE public.object_id_relationship
+  DROP CONSTRAINT IF EXISTS fk_object_id_relationship_stable_source;
+ALTER TABLE public.object_id_relationship
+  ADD CONSTRAINT fk_object_id_relationship_stable_source
+  FOREIGN KEY (scope_key, source_stable_entity_id)
+  REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT
+  NOT VALID;
+ALTER TABLE public.object_id_relationship
+  VALIDATE CONSTRAINT fk_object_id_relationship_stable_source;
+
+ALTER TABLE public.object_id_relationship
+  DROP CONSTRAINT IF EXISTS fk_object_id_relationship_stable_target;
+ALTER TABLE public.object_id_relationship
+  ADD CONSTRAINT fk_object_id_relationship_stable_target
+  FOREIGN KEY (scope_key, target_stable_entity_id)
+  REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT
+  NOT VALID;
+ALTER TABLE public.object_id_relationship
+  VALIDATE CONSTRAINT fk_object_id_relationship_stable_target;
+
+ALTER TABLE public.object_id_relationship
+  DROP CONSTRAINT IF EXISTS chk_object_id_relationship_endpoint_resolution;
+ALTER TABLE public.object_id_relationship
+  ADD CONSTRAINT chk_object_id_relationship_endpoint_resolution
+  CHECK (
+    endpoint_resolution_status IN ('legacy', 'resolved', 'unmapped', 'ambiguous', 'failed')
+    AND (
+      endpoint_resolution_status <> 'resolved'
+      OR (
+        scope_key IS NOT NULL
+        AND source_stable_entity_id IS NOT NULL
+        AND target_stable_entity_id IS NOT NULL
+      )
+    )
+  ) NOT VALID;
+ALTER TABLE public.object_id_relationship
+  VALIDATE CONSTRAINT chk_object_id_relationship_endpoint_resolution;
+
+ALTER TABLE public.object_id_relationship
+  DROP CONSTRAINT IF EXISTS chk_object_id_relationship_valid_interval;
+ALTER TABLE public.object_id_relationship
+  ADD CONSTRAINT chk_object_id_relationship_valid_interval
+  CHECK (valid_to IS NULL OR valid_from IS NULL OR valid_to > valid_from)
+  NOT VALID;
+
+CREATE TABLE IF NOT EXISTS public.entity_relationship_migration_ledger (
+  relationship_migration_ledger_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  source_relationship_id integer NOT NULL,
+  rule_version integer NOT NULL,
+  source_digest text NOT NULL,
+  first_plan_digest text NOT NULL,
+  last_plan_digest text NOT NULL,
+  source_stable_entity_id uuid NOT NULL,
+  target_stable_entity_id uuid NOT NULL,
+  last_apply_outcome text NOT NULL,
+  evidence_json jsonb NOT NULL,
+  attempt_count integer NOT NULL DEFAULT 1,
+  first_reviewed_at timestamptz NOT NULL,
+  last_reviewed_at timestamptz NOT NULL,
+  last_reviewed_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, source_relationship_id, rule_version, source_digest),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (source_relationship_id)
+    REFERENCES public.object_id_relationship(id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, source_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, target_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_relationship_migration_rule CHECK (rule_version > 0),
+  CONSTRAINT chk_entity_relationship_migration_source_digest
+    CHECK (source_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_entity_relationship_migration_first_plan_digest
+    CHECK (first_plan_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_entity_relationship_migration_last_plan_digest
+    CHECK (last_plan_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_entity_relationship_migration_outcome
+    CHECK (last_apply_outcome IN ('applied', 'unchanged')),
+  CONSTRAINT chk_entity_relationship_migration_attempt_count CHECK (attempt_count > 0),
+  CONSTRAINT chk_entity_relationship_migration_review_order
+    CHECK (last_reviewed_at >= first_reviewed_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_relationship_migration_review
+  ON public.entity_relationship_migration_ledger
+    (scope_key, last_apply_outcome, last_reviewed_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.entity_lifecycle_operation (
+  lifecycle_operation_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  request_key text NOT NULL,
+  operation_kind text NOT NULL,
+  primary_stable_entity_id uuid NOT NULL,
+  occurred_at timestamptz NOT NULL,
+  actor text NOT NULL,
+  reason text NULL,
+  input_digest text NOT NULL,
+  input_json jsonb NOT NULL,
+  result_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, request_key),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, primary_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_lifecycle_request_key CHECK (length(btrim(request_key)) > 0),
+  CONSTRAINT chk_entity_lifecycle_kind
+    CHECK (operation_kind IN ('move', 'rename', 'archive', 'merge', 'split')),
+  CONSTRAINT chk_entity_lifecycle_actor CHECK (length(btrim(actor)) > 0),
+  CONSTRAINT chk_entity_lifecycle_input_digest
+    CHECK (input_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_lifecycle_operation_entity
+  ON public.entity_lifecycle_operation
+    (scope_key, primary_stable_entity_id, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.entity_lineage (
+  entity_lineage_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  lifecycle_operation_id uuid NOT NULL,
+  lineage_kind text NOT NULL,
+  predecessor_stable_entity_id uuid NOT NULL,
+  successor_stable_entity_id uuid NOT NULL,
+  valid_from timestamptz NOT NULL,
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (
+    scope_key,
+    lifecycle_operation_id,
+    predecessor_stable_entity_id,
+    successor_stable_entity_id
+  ),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (lifecycle_operation_id)
+    REFERENCES public.entity_lifecycle_operation(lifecycle_operation_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, predecessor_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, successor_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_lineage_kind CHECK (lineage_kind IN ('merge', 'split')),
+  CONSTRAINT chk_entity_lineage_distinct CHECK (predecessor_stable_entity_id <> successor_stable_entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_lineage_predecessor
+  ON public.entity_lineage (scope_key, predecessor_stable_entity_id, valid_from DESC);
+
+CREATE INDEX IF NOT EXISTS idx_entity_lineage_successor
+  ON public.entity_lineage (scope_key, successor_stable_entity_id, valid_from DESC);
 
 -- === CHAT THREADS TABLE =====================================================
 CREATE TABLE IF NOT EXISTS public."chat_threads" (
