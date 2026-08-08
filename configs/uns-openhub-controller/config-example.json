@@ -1,7 +1,7 @@
 {
   "uns": {
-    "graphql": "http://uns-datahub-controller:3200/graphql",
-    "rest": "http://uns-datahub-controller:3200/api",
+    "graphql": "http://uns-openhub-controller:3200/graphql",
+    "rest": "http://uns-openhub-controller:3200/api",
     "env": "prod",
     "processName": "controller"
   },
@@ -24,18 +24,11 @@
     "ssl": false
   },
 
-  "azure": {
-    "azureClientId": {"key": "AZURE_CLIENT_ID", "provider": "env", "default": ""},
-    "azureClientSecret": {"key": "AZURE_CLIENT_SECRET", "provider": "env", "default": ""},
-    "azureScope": {"key": "AZURE_SCOPE", "provider": "env", "default": ""},
-    "azureTenantId": {"key": "AZURE_TENANT_ID", "provider": "env", "default": ""}
-  },
-
   "server": {
     "apiEndpoint": "/api",
     "docsEndpoint": "/docs",
     "graphqlEndpoint": "/graphql",
-    "ip": "uns-datahub-controller",
+    "ip": "uns-openhub-controller",
     "port": 3200,
     "cluster": true,
     "infisicalSecretCacheEnabled": true,
@@ -50,7 +43,7 @@
   },
 
   "frontend": {
-    "url": "http://uns-datahub-controller:3200/"
+    "url": "http://uns-openhub-controller:3200/"
   },
 
   "unsApiGlobal": {

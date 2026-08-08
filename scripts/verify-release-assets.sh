@@ -53,7 +53,7 @@ while read -r expected asset_name extra; do
   verify_checksum "$expected" "$asset_dir/$asset_name"
 done <"$checksum_index"
 
-offline_name="uns-datahub-runtime-${version}-offline.tar.gz"
+offline_name="uns-openhub-runtime-${version}-offline.tar.gz"
 offline_marker="$runtime_dir/release/offline-bundle"
 if [[ -f "$offline_marker" ]]; then
   [[ "$(tr -d '[:space:]' < "$offline_marker")" == "$version" ]] || {

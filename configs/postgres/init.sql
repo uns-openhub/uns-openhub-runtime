@@ -513,13 +513,15 @@ INSERT INTO public.auth_scopes(scope)
 VALUES
   ('read:uns'),
   ('export:uns-reference'),
-  ('export:uns-reference:all')
+  ('export:uns-reference:all'),
+  ('platform-packages:install:tenant:default')
 ON CONFLICT (scope) DO NOTHING;
 
 INSERT INTO public.auth_role_scopes(role, scope)
 VALUES
   ('admin', 'read:uns'),
   ('admin', 'export:uns-reference'),
+  ('admin', 'platform-packages:install:tenant:default'),
   ('operator', 'export:uns-reference')
 ON CONFLICT (role, scope) DO NOTHING;
 
@@ -1917,6 +1919,608 @@ CREATE INDEX IF NOT EXISTS idx_platform_package_audit_scope_created_at
 
 CREATE INDEX IF NOT EXISTS idx_platform_package_audit_package_created_at
   ON public.platform_package_audit (package_id, package_version, created_at DESC);
+
+-- Tenant-scoped authoring drafts are mutable working copies. Validation rows
+-- retain the exact reviewed revision and are intentionally append-only.
+CREATE TABLE IF NOT EXISTS public.platform_package_candidate_draft (
+  scope_key text NOT NULL REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  draft_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  package_id text NOT NULL,
+  base_package_version text NOT NULL,
+  base_package_digest text NOT NULL,
+  candidate_package_version text NOT NULL,
+  candidate_digest text NOT NULL,
+  revision integer NOT NULL DEFAULT 1 CHECK (revision > 0),
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'discarded')),
+  candidate_json jsonb NOT NULL,
+  created_by text NOT NULL,
+  updated_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  discarded_by text NULL,
+  discarded_at timestamptz NULL,
+  PRIMARY KEY (scope_key, draft_id),
+  CONSTRAINT chk_platform_package_candidate_draft_base_digest
+    CHECK (base_package_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_package_candidate_draft_candidate_digest
+    CHECK (candidate_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_package_candidate_draft_discard_state
+    CHECK (
+      (status = 'draft' AND discarded_by IS NULL AND discarded_at IS NULL) OR
+      (status = 'discarded' AND discarded_by IS NOT NULL AND discarded_at IS NOT NULL)
+    )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_platform_package_candidate_draft_owner_active
+  ON public.platform_package_candidate_draft
+    (scope_key, package_id, base_package_version, created_by)
+  WHERE status = 'draft';
+
+CREATE INDEX IF NOT EXISTS idx_platform_package_candidate_draft_scope_updated
+  ON public.platform_package_candidate_draft (scope_key, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.platform_package_candidate_validation (
+  scope_key text NOT NULL,
+  validation_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  draft_id uuid NOT NULL,
+  draft_revision integer NOT NULL CHECK (draft_revision > 0),
+  candidate_digest text NOT NULL,
+  candidate_json jsonb NOT NULL,
+  valid boolean NOT NULL,
+  result_json jsonb NOT NULL,
+  validated_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, validation_id),
+  FOREIGN KEY (scope_key, draft_id)
+    REFERENCES public.platform_package_candidate_draft(scope_key, draft_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_platform_package_candidate_validation_digest
+    CHECK (candidate_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_package_candidate_validation_history
+  ON public.platform_package_candidate_validation
+    (scope_key, draft_id, created_at DESC, validation_id DESC);
+
+CREATE OR REPLACE FUNCTION public.reject_platform_package_candidate_validation_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'platform package candidate validations are immutable'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgname = 'trg_platform_package_candidate_validation_immutable'
+      AND tgrelid = 'public.platform_package_candidate_validation'::regclass
+  ) THEN
+    CREATE TRIGGER trg_platform_package_candidate_validation_immutable
+      BEFORE UPDATE OR DELETE ON public.platform_package_candidate_validation
+      FOR EACH ROW EXECUTE FUNCTION public.reject_platform_package_candidate_validation_mutation();
+  END IF;
+END
+$$;
+
+-- Review submissions and their final decisions are separate append-only
+-- evidence. A decision is bound to one exact successful validation and cannot
+-- be made by the submitter.
+CREATE TABLE IF NOT EXISTS public.platform_package_candidate_review (
+  scope_key text NOT NULL,
+  review_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  draft_id uuid NOT NULL,
+  validation_id uuid NOT NULL,
+  draft_revision integer NOT NULL CHECK (draft_revision > 0),
+  candidate_digest text NOT NULL,
+  package_id text NOT NULL,
+  candidate_package_version text NOT NULL,
+  submitted_by text NOT NULL,
+  requires_four_eyes boolean NOT NULL DEFAULT false,
+  submission_note text NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, review_id),
+  UNIQUE (scope_key, validation_id),
+  FOREIGN KEY (scope_key, draft_id)
+    REFERENCES public.platform_package_candidate_draft(scope_key, draft_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, validation_id)
+    REFERENCES public.platform_package_candidate_validation(scope_key, validation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_platform_package_candidate_review_digest
+    CHECK (candidate_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_package_candidate_review_submitter
+    CHECK (length(btrim(submitted_by)) > 0),
+  CONSTRAINT chk_platform_package_candidate_review_note
+    CHECK (submission_note IS NULL OR length(submission_note) <= 2000)
+);
+
+ALTER TABLE public.platform_package_candidate_review
+  ADD COLUMN IF NOT EXISTS requires_four_eyes boolean;
+
+UPDATE public.platform_package_candidate_review
+SET requires_four_eyes = true
+WHERE requires_four_eyes IS NULL;
+
+ALTER TABLE public.platform_package_candidate_review
+  ALTER COLUMN requires_four_eyes SET DEFAULT false,
+  ALTER COLUMN requires_four_eyes SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_platform_package_candidate_review_scope_created
+  ON public.platform_package_candidate_review (scope_key, created_at DESC, review_id DESC);
+
+CREATE TABLE IF NOT EXISTS public.platform_package_candidate_review_decision (
+  scope_key text NOT NULL,
+  decision_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  review_id uuid NOT NULL,
+  validation_id uuid NOT NULL,
+  candidate_digest text NOT NULL,
+  decision text NOT NULL CHECK (decision IN ('approved', 'rejected')),
+  decided_by text NOT NULL,
+  decision_note text NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, decision_id),
+  UNIQUE (scope_key, review_id),
+  FOREIGN KEY (scope_key, review_id)
+    REFERENCES public.platform_package_candidate_review(scope_key, review_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, validation_id)
+    REFERENCES public.platform_package_candidate_validation(scope_key, validation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_platform_package_candidate_review_decision_digest
+    CHECK (candidate_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_platform_package_candidate_review_decider
+    CHECK (length(btrim(decided_by)) > 0),
+  CONSTRAINT chk_platform_package_candidate_review_decision_note
+    CHECK (decision_note IS NULL OR length(decision_note) <= 2000),
+  CONSTRAINT chk_platform_package_candidate_review_rejection_note
+    CHECK (decision <> 'rejected' OR length(btrim(decision_note)) > 0)
+);
+
+CREATE OR REPLACE FUNCTION public.validate_platform_package_candidate_review_decision()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  expected_validation_id uuid;
+  expected_candidate_digest text;
+  expected_submitter text;
+  expected_requires_four_eyes boolean;
+  expected_draft_revision integer;
+  current_draft_revision integer;
+  current_candidate_digest text;
+  current_draft_status text;
+BEGIN
+  SELECT review.validation_id, review.candidate_digest, review.submitted_by, review.requires_four_eyes,
+         review.draft_revision, draft.revision, draft.candidate_digest, draft.status
+  INTO expected_validation_id, expected_candidate_digest, expected_submitter, expected_requires_four_eyes,
+       expected_draft_revision, current_draft_revision, current_candidate_digest, current_draft_status
+  FROM public.platform_package_candidate_review review
+  JOIN public.platform_package_candidate_draft draft
+    ON draft.scope_key = review.scope_key AND draft.draft_id = review.draft_id
+  WHERE review.scope_key = NEW.scope_key
+    AND review.review_id = NEW.review_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'platform package candidate review was not found'
+      USING ERRCODE = '23503';
+  END IF;
+  IF NEW.validation_id <> expected_validation_id
+    OR NEW.candidate_digest <> expected_candidate_digest THEN
+    RAISE EXCEPTION 'platform package candidate review decision evidence does not match its review'
+      USING ERRCODE = '23514';
+  END IF;
+  IF expected_requires_four_eyes
+    AND lower(btrim(NEW.decided_by)) = lower(btrim(expected_submitter)) THEN
+    RAISE EXCEPTION 'platform package candidate review submitter cannot decide their own review'
+      USING ERRCODE = '23514';
+  END IF;
+  IF current_draft_status <> 'draft'
+    OR current_draft_revision <> expected_draft_revision
+    OR current_candidate_digest <> expected_candidate_digest THEN
+    RAISE EXCEPTION 'platform package candidate review is superseded'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.reject_platform_package_candidate_review_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'platform package candidate review evidence is immutable'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_platform_package_candidate_review_decision_binding'
+      AND tgrelid = 'public.platform_package_candidate_review_decision'::regclass
+  ) THEN
+    CREATE TRIGGER trg_platform_package_candidate_review_decision_binding
+      BEFORE INSERT ON public.platform_package_candidate_review_decision
+      FOR EACH ROW EXECUTE FUNCTION public.validate_platform_package_candidate_review_decision();
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_platform_package_candidate_review_immutable'
+      AND tgrelid = 'public.platform_package_candidate_review'::regclass
+  ) THEN
+    CREATE TRIGGER trg_platform_package_candidate_review_immutable
+      BEFORE UPDATE OR DELETE ON public.platform_package_candidate_review
+      FOR EACH ROW EXECUTE FUNCTION public.reject_platform_package_candidate_review_mutation();
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_platform_package_candidate_review_decision_immutable'
+      AND tgrelid = 'public.platform_package_candidate_review_decision'::regclass
+  ) THEN
+    CREATE TRIGGER trg_platform_package_candidate_review_decision_immutable
+      BEFORE UPDATE OR DELETE ON public.platform_package_candidate_review_decision
+      FOR EACH ROW EXECUTE FUNCTION public.reject_platform_package_candidate_review_mutation();
+  END IF;
+END
+$$;
+
+-- Tenant-scoped solution-profile authoring drafts. Manifest semantic version
+-- identifies publishable content; revision is only the optimistic authoring
+-- counter. Successful validations retain the exact manifest bytes and digest.
+CREATE TABLE IF NOT EXISTS public.solution_profile_candidate_draft (
+  scope_key text NOT NULL REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  draft_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  profile_id text NOT NULL,
+  candidate_profile_version text NOT NULL,
+  candidate_digest text NOT NULL,
+  revision integer NOT NULL DEFAULT 1 CHECK (revision > 0),
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'discarded')),
+  manifest_json jsonb NOT NULL,
+  manifest_text text NOT NULL,
+  created_by text NOT NULL,
+  updated_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  discarded_by text NULL,
+  discarded_at timestamptz NULL,
+  PRIMARY KEY (scope_key, draft_id),
+  CONSTRAINT chk_solution_profile_candidate_draft_digest
+    CHECK (candidate_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_solution_profile_candidate_draft_discard_state
+    CHECK (
+      (status = 'draft' AND discarded_by IS NULL AND discarded_at IS NULL) OR
+      (status = 'discarded' AND discarded_by IS NOT NULL AND discarded_at IS NOT NULL)
+    )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_solution_profile_candidate_draft_owner_active
+  ON public.solution_profile_candidate_draft (scope_key, profile_id, created_by)
+  WHERE status = 'draft';
+
+CREATE INDEX IF NOT EXISTS idx_solution_profile_candidate_draft_scope_updated
+  ON public.solution_profile_candidate_draft (scope_key, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.solution_profile_candidate_validation (
+  scope_key text NOT NULL,
+  validation_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  draft_id uuid NOT NULL,
+  draft_revision integer NOT NULL CHECK (draft_revision > 0),
+  candidate_digest text NOT NULL,
+  manifest_json jsonb NOT NULL,
+  manifest_text text NOT NULL,
+  result_json jsonb NOT NULL,
+  validated_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, validation_id),
+  FOREIGN KEY (scope_key, draft_id)
+    REFERENCES public.solution_profile_candidate_draft(scope_key, draft_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_solution_profile_candidate_validation_digest
+    CHECK (candidate_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_solution_profile_candidate_validation_history
+  ON public.solution_profile_candidate_validation
+    (scope_key, draft_id, created_at DESC, validation_id DESC);
+
+CREATE OR REPLACE FUNCTION public.reject_solution_profile_candidate_validation_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'solution profile candidate validations are immutable'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_solution_profile_candidate_validation_immutable'
+      AND tgrelid = 'public.solution_profile_candidate_validation'::regclass
+  ) THEN
+    CREATE TRIGGER trg_solution_profile_candidate_validation_immutable
+      BEFORE UPDATE OR DELETE ON public.solution_profile_candidate_validation
+      FOR EACH ROW EXECUTE FUNCTION public.reject_solution_profile_candidate_validation_mutation();
+  END IF;
+END
+$$;
+
+-- Immutable four-eyes review evidence for exact, successfully validated
+-- solution-profile candidate revisions. Approval does not publish or install.
+CREATE TABLE IF NOT EXISTS public.solution_profile_candidate_review (
+  scope_key text NOT NULL,
+  review_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  draft_id uuid NOT NULL,
+  validation_id uuid NOT NULL,
+  draft_revision integer NOT NULL CHECK (draft_revision > 0),
+  candidate_digest text NOT NULL,
+  profile_id text NOT NULL,
+  candidate_profile_version text NOT NULL,
+  submitted_by text NOT NULL,
+  requires_four_eyes boolean NOT NULL DEFAULT false,
+  submission_note text NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, review_id),
+  UNIQUE (scope_key, validation_id),
+  FOREIGN KEY (scope_key, draft_id)
+    REFERENCES public.solution_profile_candidate_draft(scope_key, draft_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, validation_id)
+    REFERENCES public.solution_profile_candidate_validation(scope_key, validation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_solution_profile_candidate_review_digest
+    CHECK (candidate_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_solution_profile_candidate_review_submitter
+    CHECK (length(btrim(submitted_by)) > 0),
+  CONSTRAINT chk_solution_profile_candidate_review_note
+    CHECK (submission_note IS NULL OR length(submission_note) <= 2000)
+);
+
+ALTER TABLE public.solution_profile_candidate_review
+  ADD COLUMN IF NOT EXISTS requires_four_eyes boolean;
+
+UPDATE public.solution_profile_candidate_review
+SET requires_four_eyes = true
+WHERE requires_four_eyes IS NULL;
+
+ALTER TABLE public.solution_profile_candidate_review
+  ALTER COLUMN requires_four_eyes SET DEFAULT false,
+  ALTER COLUMN requires_four_eyes SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_solution_profile_candidate_review_scope_created
+  ON public.solution_profile_candidate_review (scope_key, created_at DESC, review_id DESC);
+
+CREATE TABLE IF NOT EXISTS public.solution_profile_candidate_review_decision (
+  scope_key text NOT NULL,
+  decision_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  review_id uuid NOT NULL,
+  validation_id uuid NOT NULL,
+  candidate_digest text NOT NULL,
+  decision text NOT NULL CHECK (decision IN ('approved', 'rejected')),
+  decided_by text NOT NULL,
+  decision_note text NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, decision_id),
+  UNIQUE (scope_key, review_id),
+  FOREIGN KEY (scope_key, review_id)
+    REFERENCES public.solution_profile_candidate_review(scope_key, review_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, validation_id)
+    REFERENCES public.solution_profile_candidate_validation(scope_key, validation_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_solution_profile_candidate_review_decision_digest
+    CHECK (candidate_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_solution_profile_candidate_review_decider
+    CHECK (length(btrim(decided_by)) > 0),
+  CONSTRAINT chk_solution_profile_candidate_review_decision_note
+    CHECK (decision_note IS NULL OR length(decision_note) <= 2000),
+  CONSTRAINT chk_solution_profile_candidate_review_rejection_note
+    CHECK (decision <> 'rejected' OR length(btrim(decision_note)) > 0)
+);
+
+CREATE OR REPLACE FUNCTION public.validate_solution_profile_candidate_review_decision()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  expected_validation_id uuid;
+  expected_candidate_digest text;
+  expected_submitter text;
+  expected_requires_four_eyes boolean;
+  expected_draft_revision integer;
+  current_draft_revision integer;
+  current_candidate_digest text;
+  current_draft_status text;
+BEGIN
+  SELECT review.validation_id, review.candidate_digest, review.submitted_by, review.requires_four_eyes,
+         review.draft_revision, draft.revision, draft.candidate_digest, draft.status
+  INTO expected_validation_id, expected_candidate_digest, expected_submitter, expected_requires_four_eyes,
+       expected_draft_revision, current_draft_revision, current_candidate_digest, current_draft_status
+  FROM public.solution_profile_candidate_review review
+  JOIN public.solution_profile_candidate_draft draft
+    ON draft.scope_key = review.scope_key AND draft.draft_id = review.draft_id
+  WHERE review.scope_key = NEW.scope_key AND review.review_id = NEW.review_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'solution profile candidate review was not found' USING ERRCODE = '23503';
+  END IF;
+  IF NEW.validation_id <> expected_validation_id OR NEW.candidate_digest <> expected_candidate_digest THEN
+    RAISE EXCEPTION 'solution profile candidate review decision evidence does not match its review'
+      USING ERRCODE = '23514';
+  END IF;
+  IF expected_requires_four_eyes
+    AND lower(btrim(NEW.decided_by)) = lower(btrim(expected_submitter)) THEN
+    RAISE EXCEPTION 'solution profile candidate review submitter cannot decide their own review'
+      USING ERRCODE = '23514';
+  END IF;
+  IF current_draft_status <> 'draft'
+    OR current_draft_revision <> expected_draft_revision
+    OR current_candidate_digest <> expected_candidate_digest THEN
+    RAISE EXCEPTION 'solution profile candidate review is superseded'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.reject_solution_profile_candidate_review_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'solution profile candidate review evidence is immutable'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_solution_profile_candidate_review_decision_binding'
+      AND tgrelid = 'public.solution_profile_candidate_review_decision'::regclass
+  ) THEN
+    CREATE TRIGGER trg_solution_profile_candidate_review_decision_binding
+      BEFORE INSERT ON public.solution_profile_candidate_review_decision
+      FOR EACH ROW EXECUTE FUNCTION public.validate_solution_profile_candidate_review_decision();
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_solution_profile_candidate_review_immutable'
+      AND tgrelid = 'public.solution_profile_candidate_review'::regclass
+  ) THEN
+    CREATE TRIGGER trg_solution_profile_candidate_review_immutable
+      BEFORE UPDATE OR DELETE ON public.solution_profile_candidate_review
+      FOR EACH ROW EXECUTE FUNCTION public.reject_solution_profile_candidate_review_mutation();
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_solution_profile_candidate_review_decision_immutable'
+      AND tgrelid = 'public.solution_profile_candidate_review_decision'::regclass
+  ) THEN
+    CREATE TRIGGER trg_solution_profile_candidate_review_decision_immutable
+      BEFORE UPDATE OR DELETE ON public.solution_profile_candidate_review_decision
+      FOR EACH ROW EXECUTE FUNCTION public.reject_solution_profile_candidate_review_mutation();
+  END IF;
+END
+$$;
+
+-- Controller-owned immutable publication registry. A publication is accepted
+-- only for the exact current validation carrying an approved four-eyes review.
+CREATE TABLE IF NOT EXISTS public.platform_artifact_publication (
+  publication_id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  artifact_kind text NOT NULL CHECK (artifact_kind IN ('domain-package', 'solution-profile')),
+  artifact_id text NOT NULL,
+  artifact_version text NOT NULL,
+  artifact_digest text NOT NULL CHECK (artifact_digest ~ '^sha256:[0-9a-f]{64}$'),
+  candidate_digest text NOT NULL CHECK (candidate_digest ~ '^sha256:[0-9a-f]{64}$'),
+  artifact_json jsonb NOT NULL,
+  scope_key text NOT NULL,
+  review_id uuid NOT NULL,
+  validation_id uuid NOT NULL,
+  signed_evidence text NOT NULL,
+  signing_key_id text NOT NULL,
+  published_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (artifact_kind, artifact_id, artifact_version),
+  CONSTRAINT chk_platform_artifact_publication_identity
+    CHECK (length(btrim(artifact_id)) > 0 AND length(btrim(artifact_version)) > 0),
+  CONSTRAINT chk_platform_artifact_publication_signer
+    CHECK (length(btrim(signing_key_id)) > 0 AND length(btrim(published_by)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_artifact_publication_created
+  ON public.platform_artifact_publication (created_at DESC, publication_id DESC);
+
+CREATE OR REPLACE FUNCTION public.validate_platform_artifact_publication()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  approved boolean := false;
+BEGIN
+  IF NEW.artifact_kind = 'domain-package' THEN
+    SELECT true INTO approved
+    FROM public.platform_package_candidate_review review
+    JOIN public.platform_package_candidate_review_decision decision
+      ON decision.scope_key = review.scope_key AND decision.review_id = review.review_id
+    JOIN public.platform_package_candidate_draft draft
+      ON draft.scope_key = review.scope_key AND draft.draft_id = review.draft_id
+    JOIN public.platform_package_candidate_validation validation
+      ON validation.scope_key = review.scope_key AND validation.validation_id = review.validation_id
+    WHERE review.scope_key = NEW.scope_key
+      AND review.review_id = NEW.review_id
+      AND review.validation_id = NEW.validation_id
+      AND review.candidate_digest = NEW.candidate_digest
+      AND review.package_id = NEW.artifact_id
+      AND review.candidate_package_version = NEW.artifact_version
+      AND decision.decision = 'approved'
+      AND decision.validation_id = review.validation_id
+      AND decision.candidate_digest = review.candidate_digest
+      AND draft.status = 'draft'
+      AND draft.revision = review.draft_revision
+      AND draft.candidate_digest = review.candidate_digest
+      AND validation.result_json #>> '{artifact,digest}' = NEW.artifact_digest;
+  ELSE
+    SELECT true INTO approved
+    FROM public.solution_profile_candidate_review review
+    JOIN public.solution_profile_candidate_review_decision decision
+      ON decision.scope_key = review.scope_key AND decision.review_id = review.review_id
+    JOIN public.solution_profile_candidate_draft draft
+      ON draft.scope_key = review.scope_key AND draft.draft_id = review.draft_id
+    JOIN public.solution_profile_candidate_validation validation
+      ON validation.scope_key = review.scope_key AND validation.validation_id = review.validation_id
+    WHERE review.scope_key = NEW.scope_key
+      AND review.review_id = NEW.review_id
+      AND review.validation_id = NEW.validation_id
+      AND review.candidate_digest = NEW.candidate_digest
+      AND review.profile_id = NEW.artifact_id
+      AND review.candidate_profile_version = NEW.artifact_version
+      AND decision.decision = 'approved'
+      AND decision.validation_id = review.validation_id
+      AND decision.candidate_digest = review.candidate_digest
+      AND draft.status = 'draft'
+      AND draft.revision = review.draft_revision
+      AND draft.candidate_digest = review.candidate_digest
+      AND validation.candidate_digest = NEW.artifact_digest;
+  END IF;
+  IF NOT approved THEN
+    RAISE EXCEPTION 'artifact publication requires a current exact approved review'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.reject_platform_artifact_publication_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'published platform artifacts are immutable' USING ERRCODE = '55000';
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_platform_artifact_publication_binding'
+      AND tgrelid = 'public.platform_artifact_publication'::regclass
+  ) THEN
+    CREATE TRIGGER trg_platform_artifact_publication_binding
+      BEFORE INSERT ON public.platform_artifact_publication
+      FOR EACH ROW EXECUTE FUNCTION public.validate_platform_artifact_publication();
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_platform_artifact_publication_immutable'
+      AND tgrelid = 'public.platform_artifact_publication'::regclass
+  ) THEN
+    CREATE TRIGGER trg_platform_artifact_publication_immutable
+      BEFORE UPDATE OR DELETE ON public.platform_artifact_publication
+      FOR EACH ROW EXECUTE FUNCTION public.reject_platform_artifact_publication_mutation();
+  END IF;
+END
+$$;
 
 -- P2.5 compatibility migration: the 1.x setup path had one implicit
 -- controller scope. Preserve its data under the explicit default tenant before

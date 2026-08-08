@@ -1,7 +1,7 @@
 version: "3.9"
 
 services:
-  uns-datahub-controller:
+  uns-openhub-controller:
     user: ${CONTROLLER_USER:-root}
     image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsopenhub}/${UNS_CONTROLLER_REPOSITORY:-uns-openhub-controller}:${UNS_TAG:-latest}
     environment:
@@ -13,11 +13,10 @@ services:
     ports:
       - "3200:3200"
     volumes:
-      - ./configs/uns-datahub-controller:/usr/src/app/config-overrides:ro${BIND_MOUNT_LABEL:-}
+      - ./configs/uns-openhub-controller:/usr/src/app/config-overrides:ro${BIND_MOUNT_LABEL:-}
       - ./.secrets:/run/secrets:ro${BIND_MOUNT_LABEL:-}
       - uns_crypto:/usr/src/app/crypto
       - controller_code:/usr/src/app/controller-override
-      - rtt_nodes:/usr/src/app/rtt-nodes
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget -qO- http://127.0.0.1:3200/api/healthcheck >/dev/null 2>&1 || exit 1"]
@@ -28,7 +27,7 @@ services:
     env_file:
       - .env
     networks:
-      - uns-datahub
+      - uns-openhub
 
 secrets:
   infisical_token:
@@ -41,8 +40,7 @@ secrets:
 volumes:
   uns_crypto: {}
   controller_code: {}
-  rtt_nodes: {}
 
 networks:
-  uns-datahub:
-    name: uns-datahub
+  uns-openhub:
+    name: uns-openhub

@@ -1,6 +1,6 @@
 .env
 .cache/
 .release/
-configs/uns-datahub-controller/config*.json
-!configs/uns-datahub-controller/config-example.json
-!configs/uns-datahub-controller/config-infisical-example.json
+configs/uns-openhub-controller/config*.json
+!configs/uns-openhub-controller/config-example.json
+!configs/uns-openhub-controller/config-infisical-example.json

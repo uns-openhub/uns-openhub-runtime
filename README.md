@@ -2,7 +2,7 @@
 
 > **Private initial release.** This generated repository is currently private.
 > It may be made public later, but public visibility does not change the
-> proprietary license or expose the private `uns-datahub-tools` source.
+> proprietary license or expose the private `uns-openhub-tools` source.
 
 This bundle runs the UNS OpenHub Controller from registry images. It supports
 three common cases:
@@ -53,12 +53,12 @@ changing to the initialized runtime directory, so it also works when bootstrap
 was launched elsewhere.
 
 The default target is the stable per-user directory
-`$HOME/uns-datahub-runtime`. To install beside the current working directory
+`$HOME/uns-openhub-runtime`. To install beside the current working directory
 instead:
 
 ```sh
 "$HOME/.local/bin/uns-bootstrap" install \
-  --dir "$PWD/uns-datahub-runtime"
+  --dir "$PWD/uns-openhub-runtime"
 ```
 
 Windows PowerShell:
@@ -71,12 +71,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 & "$HOME\.local\bin\uns-bootstrap.exe" install
 ```
 
-The Windows default is `$HOME\uns-datahub-runtime`. To install beside the
+The Windows default is `$HOME\uns-openhub-runtime`. To install beside the
 current PowerShell directory instead:
 
 ```powershell
 & "$HOME\.local\bin\uns-bootstrap.exe" install `
-  --dir (Join-Path $PWD "uns-datahub-runtime")
+  --dir (Join-Path $PWD "uns-openhub-runtime")
 ```
 
 Use `uns-bootstrap version` to show the Bootstrap version and the Runtime
@@ -158,26 +158,15 @@ Compose files retain safe defaults so regeneration does not overwrite the
 preserved `.env`.
 
 3. For local runs without Infisical, keep `CONFIG_FILE=config-example.json`.
-   Azure DevOps repository access is optional and can be configured manually
-   in `.env`:
-
-```env
-AZURE_CLIENT_ID=
-AZURE_CLIENT_SECRET=
-AZURE_SCOPE=
-AZURE_TENANT_ID=
-```
-
-Leave them empty if you do not use that integration. The default local
-Postgres password is read from `POSTGRES_PASSWORD` in `.env`. If you change
-`POSTGRES_USER` or `POSTGRES_DB`, update the same values in
-`configs/uns-datahub-controller/config-example.json`.
+   The default local Postgres password is read from `POSTGRES_PASSWORD` in
+   `.env`. If you change `POSTGRES_USER` or `POSTGRES_DB`, update the same
+   values in `configs/uns-openhub-controller/config-example.json`.
 
 4. Edit the controller config only when your endpoints differ from the local
    defaults:
 
 ```text
-configs/uns-datahub-controller/config-example.json
+configs/uns-openhub-controller/config-example.json
 ```
 
 If you create another config file, set `CONFIG_FILE` in `.env` to that file
@@ -194,7 +183,7 @@ Infisical instead of `.env`.
 CONFIG_FILE=config-infisical-example.json
 ```
 
-2. Edit `configs/uns-datahub-controller/config-infisical-example.json` and
+2. Edit `configs/uns-openhub-controller/config-infisical-example.json` and
    replace the endpoint placeholders.
 
 3. Create the controller secret files:
@@ -232,7 +221,6 @@ Machine Identity with Universal Auth enabled.
 The bundled Infisical config expects these secrets:
 
 - `/db/pg`, environment `prod`: `PG_PASS`
-- `/azure`, environment `dev`: `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SCOPE`, `AZURE_TENANT_ID`
 - `/keys`, environment `prod`: `PRIVATE_KEY`
 
 ## 1. Start Infra Only
@@ -267,7 +255,7 @@ docker compose -f docker-compose.infra.yml down
 ## 2. Start Controller Only
 
 Use this when Postgres, MQTT, and other infrastructure already exist elsewhere.
-Make sure `configs/uns-datahub-controller/config-example.json` points to those
+Make sure `configs/uns-openhub-controller/config-example.json` points to those
 external services, or use `config-infisical-example.json` if those values come
 from Infisical.
 
@@ -284,7 +272,7 @@ docker compose -f docker-compose.controller.yml ps
 View controller logs:
 
 ```sh
-docker compose -f docker-compose.controller.yml logs -f uns-datahub-controller
+docker compose -f docker-compose.controller.yml logs -f uns-openhub-controller
 ```
 
 Stop:
@@ -314,7 +302,7 @@ docker compose logs -f postgres
 docker compose logs -f mosquitto
 docker compose logs -f caddy
 docker compose logs -f questdb
-docker compose logs -f uns-datahub-controller
+docker compose logs -f uns-openhub-controller
 ```
 
 Stop:
@@ -334,7 +322,7 @@ Reconfigure the runtime:
 Install a verified private runtime without Git from the public bootstrap:
 
 ```sh
-uns-bootstrap install --dir "$HOME/uns-datahub-runtime"
+uns-bootstrap install --dir "$HOME/uns-openhub-runtime"
 ```
 
 Before creating an optional Git release tag, check version and release-index
@@ -352,7 +340,7 @@ Synchronize a public or private runtime repository into a separate checkout:
 ```sh
 ./bin/uns runtime sync \
   --repo https://github.com/uns-openhub/uns-openhub-runtime.git \
-  --dir "$HOME/uns-datahub-runtime-github"
+  --dir "$HOME/uns-openhub-runtime"
 ```
 
 The CLI first tries existing Git access. The initial checkout is shallow so
@@ -372,13 +360,12 @@ versioned GitHub Release:
 
 ```sh
 ./bin/uns controller update \
-  --runtime-dir "$HOME/uns-datahub-runtime-github" \
+  --runtime-dir "$HOME/uns-openhub-runtime" \
   --tag latest
 ```
 
 This replaces only the controller runtime files and restarts the PM2 process
-named `controller`. It does not recreate the container and does not replace RTT
-node apps.
+named `controller`. It does not recreate the container.
 
 `latest` means the immutable version recorded in the verified runtime
 checkout, not an unpinned controller-source branch. You can also use a specific

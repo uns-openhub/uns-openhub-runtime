@@ -28,13 +28,6 @@
     }
   },
 
-  "azure": {
-    "azureClientId": {"environment": "dev", "key": "AZURE_CLIENT_ID", "provider": "infisical", "path": "/azure"},
-    "azureClientSecret": {"environment": "dev", "key": "AZURE_CLIENT_SECRET", "provider": "infisical", "path": "/azure"},
-    "azureScope": {"environment": "dev", "key": "AZURE_SCOPE", "provider": "infisical", "path": "/azure"},
-    "azureTenantId": {"environment": "dev", "key": "AZURE_TENANT_ID", "provider": "infisical", "path": "/azure"}
-  },
-
   "server": {
     "apiEndpoint": "/api",
     "docsEndpoint": "/docs",
@@ -94,7 +87,7 @@
                 "certificate": "[PATH_TO_PUBLIC_CERT]",
                 "key": "[PATH_TO_PRIVATE_KEY]",
                 "tags": [
-                  "unsdatahub-cert"
+                  "unsopenhub-cert"
                 ]
               }
             ]
@@ -108,7 +101,7 @@
                 {
                   "certificate_selection": {
                     "any_tag": [
-                      "unsdatahub-cert"
+                      "unsopenhub-cert"
                     ]
                   }
                 }

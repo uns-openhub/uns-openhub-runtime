@@ -10,9 +10,8 @@ Environment=UNS_CONTROLLER_REPOSITORY=uns-openhub-controller
 EnvironmentFile=/etc/uns/controller.env
 ExecStart=/usr/bin/podman run --replace --name uns-controller --detach \
   -p 3200:3200 \
-  -v /etc/uns/configs/uns-datahub-controller:/usr/src/app/config-overrides:ro \
+  -v /etc/uns/configs/uns-openhub-controller:/usr/src/app/config-overrides:ro \
   -v uns_crypto:/usr/src/app/crypto \
-  -v rtt_nodes:/usr/src/app/rtt-nodes \
   --secret infisical_token,type=mount \
   --secret infisical_project_id,type=mount \
   --secret infisical_site_url,type=mount \
