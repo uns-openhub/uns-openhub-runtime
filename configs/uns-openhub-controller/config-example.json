@@ -15,7 +15,7 @@
     "host": "postgres",
     "port": 5432,
     "database": "uns",
-    "isPoolConnection": false,
+    "isPoolConnection": true,
     "searchTextConfig": "public.uns_slovenian",
     "password": {
       "key": "POSTGRES_PASSWORD",

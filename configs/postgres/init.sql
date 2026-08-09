@@ -733,6 +733,7 @@ CREATE TABLE IF NOT EXISTS public.attribute_schema (
   updated_by text NULL,
   change_source text NULL,
   change_note text NULL,
+  description_variants_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   reviewed_by text NULL,
   reviewed_at timestamptz NULL,
   CONSTRAINT uq_attribute_schema_key UNIQUE ("key"),
@@ -989,6 +990,7 @@ CREATE TABLE IF NOT EXISTS public.object_type_schema (
   updated_by text NULL,
   change_source text NULL,
   change_note text NULL,
+  description_variants_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   reviewed_by text NULL,
   reviewed_at timestamptz NULL,
   CONSTRAINT uq_object_type_schema_key UNIQUE ("key"),
@@ -1021,6 +1023,8 @@ ALTER TABLE public.object_type_schema
   ADD COLUMN IF NOT EXISTS change_source text;
 ALTER TABLE public.object_type_schema
   ADD COLUMN IF NOT EXISTS change_note text;
+ALTER TABLE public.object_type_schema
+  ADD COLUMN IF NOT EXISTS description_variants_json jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE public.object_type_schema
   ADD COLUMN IF NOT EXISTS reviewed_by text;
 ALTER TABLE public.object_type_schema

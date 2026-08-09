@@ -184,6 +184,12 @@ the active controller config, then restart the controller. Do not replace an
 existing config file wholesale, because it can contain operator-specific
 endpoints and secret references.
 
+The generated runtime uses PostgreSQL connection pooling. If an existing
+configuration explicitly sets `pg.isPoolConnection` to `false`, change it to
+`true` while applying the catalog migration, then restart the controller. A
+single shared PostgreSQL client cannot safely serve the controller's concurrent
+schema, authentication, and API reads.
+
 ### Optional: Infisical
 
 Use Infisical only if you want the controller config to resolve secrets from
