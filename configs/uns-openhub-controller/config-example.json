@@ -52,6 +52,20 @@
     "swaggerPath": "/uns-api-global/general-api/catchall-swagger.json"
   },
 
+  "addons": {
+    "repositorySources": [
+      {
+        "id": "uns-openhub-public",
+        "provider": "github",
+        "owner": "uns-openhub",
+        "versions": {
+          "mode": "releases",
+          "includePrereleases": false
+        }
+      }
+    ]
+  },
+
   "caddy": {
     "adminUrl": "http://caddy:2019/",
     "proxyHost": "http://caddy:8180",
