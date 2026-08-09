@@ -39,7 +39,6 @@ services:
 
   caddy:
     image: docker.io/library/caddy:latest
-    container_name: caddy
     restart: unless-stopped
     ports:
       - "8180:8180"

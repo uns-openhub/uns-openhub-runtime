@@ -105,7 +105,8 @@ Recommended setup:
 ```
 
 The wizard creates or updates `.env`, prepares local or Infisical settings, and
-prints the exact `docker compose` or `podman compose` commands to run next. For
+prints the `bin/uns runtime` commands to run next. Each of those commands shows
+the exact `docker compose` or `podman compose` invocation before it runs it. For
 a new `.env`, it pins `UNS_TAG` to the image version recorded when this runtime
 was generated; an existing `.env` or explicit `UNS_TAG` override is preserved.
 Passwords and access tokens requested by the wizard use hidden terminal input;
@@ -223,92 +224,55 @@ The bundled Infisical config expects these secrets:
 - `/db/pg`, environment `prod`: `PG_PASS`
 - `/keys`, environment `prod`: `PRIVATE_KEY`
 
-## 1. Start Infra Only
+## Daily Runtime Operations
 
-Use this when you only need local Postgres, Mosquitto, Caddy, and QuestDB.
+Run these commands from the runtime directory. They are the normal operator
+interface: before changing anything, each prints the exact Compose command it
+will call. Append `--dry-run` to preview without changing containers.
+
+### Start everything (default)
+
+Use this for a self-contained local runtime: infrastructure plus controller.
 
 ```sh
-docker compose --env-file .env -f docker-compose.infra.yml up -d
+./bin/uns runtime start
+./bin/uns runtime status
+./bin/uns runtime logs
+./bin/uns runtime stop
 ```
 
-Check status:
+### Infrastructure only
+
+Use this for local Postgres, Mosquitto, Caddy, and QuestDB without starting the
+controller:
 
 ```sh
-docker compose -f docker-compose.infra.yml ps
+./bin/uns runtime start --mode infra
+./bin/uns runtime status --mode infra
+./bin/uns runtime logs --mode infra
+./bin/uns runtime stop --mode infra
 ```
 
-View logs one service at a time:
+### Controller only
+
+Use this when Postgres, MQTT, and the other infrastructure already exist
+elsewhere. Make sure
+`configs/uns-openhub-controller/config-example.json` points to those external
+services, or use `config-infisical-example.json` if those values come from
+Infisical.
 
 ```sh
-docker compose -f docker-compose.infra.yml logs -f postgres
-docker compose -f docker-compose.infra.yml logs -f mosquitto
-docker compose -f docker-compose.infra.yml logs -f caddy
-docker compose -f docker-compose.infra.yml logs -f questdb
+./bin/uns runtime start --mode controller
+./bin/uns runtime status --mode controller
+./bin/uns runtime logs --mode controller
+./bin/uns runtime stop --mode controller
 ```
 
-Stop:
+`logs` also accepts one or more service names, for example:
 
 ```sh
-docker compose -f docker-compose.infra.yml down
-```
-
-## 2. Start Controller Only
-
-Use this when Postgres, MQTT, and other infrastructure already exist elsewhere.
-Make sure `configs/uns-openhub-controller/config-example.json` points to those
-external services, or use `config-infisical-example.json` if those values come
-from Infisical.
-
-```sh
-docker compose --env-file .env -f docker-compose.controller.yml up -d
-```
-
-Check status:
-
-```sh
-docker compose -f docker-compose.controller.yml ps
-```
-
-View controller logs:
-
-```sh
-docker compose -f docker-compose.controller.yml logs -f uns-openhub-controller
-```
-
-Stop:
-
-```sh
-docker compose -f docker-compose.controller.yml down
-```
-
-## 3. Start Everything
-
-Use this for a self-contained local runtime: infra plus controller.
-
-```sh
-docker compose --env-file .env up -d
-```
-
-Check status:
-
-```sh
-docker compose ps
-```
-
-View logs one service at a time:
-
-```sh
-docker compose logs -f postgres
-docker compose logs -f mosquitto
-docker compose logs -f caddy
-docker compose logs -f questdb
-docker compose logs -f uns-openhub-controller
-```
-
-Stop:
-
-```sh
-docker compose down
+./bin/uns runtime logs postgres mosquitto
+./bin/uns runtime logs --mode controller uns-openhub-controller
 ```
 
 ## Useful Commands
@@ -325,6 +289,21 @@ Install a verified private runtime without Git from the public bootstrap:
 uns-bootstrap install --dir "$HOME/uns-openhub-runtime"
 ```
 
+Update an installed runtime without Git:
+
+```sh
+./bin/uns runtime stop
+"$HOME/.local/bin/uns-bootstrap" upgrade
+cd "$HOME/uns-openhub-runtime"
+./bin/uns runtime start
+```
+
+`uns-bootstrap upgrade` downloads and verifies the selected immutable Runtime
+release, preserves `.env`, `.secrets`, `configs`, and
+`infisical-rotator.env`, and keeps the previous runtime directory as a backup.
+It never removes volumes. First update Bootstrap itself by re-running the
+platform installer above when a newer Bootstrap release is available.
+
 Before creating an optional Git release tag, check version and release-index
 consistency from the runtime repository root:
 
@@ -334,6 +313,12 @@ consistency from the runtime repository root:
 
 The check is read-only. It never stages, commits, tags, pushes, or publishes
 images.
+
+### Advanced: Git checkout maintenance
+
+`runtime sync` is only for a Runtime installed as a Git checkout. A Bootstrap
+installation intentionally is not a Git checkout; update it with
+`uns-bootstrap upgrade` instead.
 
 Synchronize a public or private runtime repository into a separate checkout:
 
