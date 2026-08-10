@@ -309,17 +309,24 @@ uns-bootstrap install --dir "$HOME/uns-openhub-runtime"
 Update an installed runtime without Git:
 
 ```sh
-./bin/uns runtime stop
 "$HOME/.local/bin/uns-bootstrap" upgrade
 cd "$HOME/uns-openhub-runtime"
 ./bin/uns runtime start
 ```
 
 `uns-bootstrap upgrade` downloads and verifies the selected immutable Runtime
-release, preserves `.env`, `.secrets`, `configs`, and
-`infisical-rotator.env`, and keeps the previous runtime directory as a backup.
-It never removes volumes. First update Bootstrap itself by re-running the
-platform installer above when a newer Bootstrap release is available.
+release, stops the current Compose project before renaming the runtime
+directory, preserves `.env`, `.secrets`, `configs`, and
+`infisical-rotator.env`, updates the managed `UNS_TAG` to the controller image
+tag recorded by the selected Runtime, and keeps the previous runtime directory
+as a backup.
+Re-running the same Runtime version only reconciles that managed image tag; it
+does not stop the running stack or create another backup.
+It never removes volumes. `uns runtime stop` also stops any retained upgrade
+backup directory that matches the current runtime name, so an interrupted old
+upgrade can be cleaned up from the current runtime. First update Bootstrap
+itself by re-running the platform installer above when a newer Bootstrap
+release is available.
 
 Before creating an optional Git release tag, check version and release-index
 consistency from the runtime repository root:
@@ -366,8 +373,9 @@ versioned GitHub Release:
   --tag latest
 ```
 
-This replaces only the controller runtime files and restarts the PM2 process
-named `controller`. It does not recreate the container.
+This replaces only the controller runtime files. It first upgrades the
+database schema and restarts the PM2 process named `controller` only after the
+schema upgrade succeeds. It does not recreate the container.
 
 `latest` means the immutable version recorded in the verified runtime
 checkout, not an unpinned controller-source branch. You can also use a specific
