@@ -310,18 +310,19 @@ Update an installed runtime without Git:
 
 ```sh
 "$HOME/.local/bin/uns-bootstrap" upgrade
-cd "$HOME/uns-openhub-runtime"
-./bin/uns runtime start
 ```
 
 `uns-bootstrap upgrade` downloads and verifies the selected immutable Runtime
 release, stops the current Compose project before renaming the runtime
 directory, preserves `.env`, `.secrets`, `configs`, and
 `infisical-rotator.env`, updates the managed `UNS_TAG` to the controller image
-tag recorded by the selected Runtime, and keeps the previous runtime directory
-as a backup.
-Re-running the same Runtime version only reconciles that managed image tag; it
-does not stop the running stack or create another backup.
+tag recorded by the selected Runtime, starts the new Runtime, and runs the
+controller's ordered database-schema migrations before it reports success. If
+the migration fails, the new Runtime is stopped, the command fails, and the
+previous runtime directory remains available as a rollback backup.
+Re-running the same Runtime version reconciles the managed image tag and runs
+the schema migration without stopping the already-running stack or creating
+another backup.
 It never removes volumes. `uns runtime stop` also stops any retained upgrade
 backup directory that matches the current runtime name, so an interrupted old
 upgrade can be cleaned up from the current runtime. First update Bootstrap
