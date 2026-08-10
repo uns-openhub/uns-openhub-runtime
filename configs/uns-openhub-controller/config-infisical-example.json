@@ -63,6 +63,10 @@
     "swaggerPath": "/uns-api-global/general-api/catchall-swagger.json"
   },
 
+  "questdb": {
+    "configurationString": "http::addr=questdb:9000;auto_flush=on"
+  },
+
   "addons": {
     "repositorySources": [
       {
