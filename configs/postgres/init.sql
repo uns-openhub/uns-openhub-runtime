@@ -4,6 +4,15 @@ CREATE EXTENSION IF NOT EXISTS citext;   -- case-insensitive email
 CREATE EXTENSION IF NOT EXISTS pg_trgm;  -- trigram search for fast fuzzy matching
 CREATE EXTENSION IF NOT EXISTS unaccent; -- accent-insensitive text search normalization
 
+-- Applied migration ledger. Fresh databases get the table here; the bootstrap
+-- upgrade step records each manifest migration after it has succeeded.
+CREATE TABLE IF NOT EXISTS public.controller_schema_migration (
+  migration_id text PRIMARY KEY,
+  checksum text NOT NULL,
+  description text NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- Optional pgvector extension for RAG/vector search storage. Dedicated
 -- production Postgres servers may not have pgvector installed or may require
 -- DBA-owned extension creation, so keep this best-effort and let schema init
@@ -733,7 +742,6 @@ CREATE TABLE IF NOT EXISTS public.attribute_schema (
   updated_by text NULL,
   change_source text NULL,
   change_note text NULL,
-  description_variants_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   reviewed_by text NULL,
   reviewed_at timestamptz NULL,
   CONSTRAINT uq_attribute_schema_key UNIQUE ("key"),
