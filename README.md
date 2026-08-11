@@ -247,6 +247,16 @@ Run these commands from the runtime directory. They are the normal operator
 interface: before changing anything, each prints the exact Compose command it
 will call. Append `--dry-run` to preview without changing containers.
 
+If Docker and Podman are both installed, choose the engine that holds the
+Runtime images and registry login. Their image stores and credentials are
+separate. Use `--engine podman` (or `--engine docker`) for one command, or set
+`UNS_CONTAINER_ENGINE=podman` in the shell before running several commands:
+
+```sh
+./bin/uns runtime start --engine podman
+UNS_CONTAINER_ENGINE=podman ./bin/uns runtime status
+```
+
 ### Start everything (default)
 
 Use this for a self-contained local runtime: infrastructure plus controller.
@@ -365,8 +375,9 @@ moving the local branch.
 On Windows, run `uns runtime sync` from an installed copy of `uns.exe` outside
 the checkout being updated so Git does not need to replace the running binary.
 
-Update the controller code in the running controller container from the
-versioned GitHub Release:
+Update controller application code in the running container without stopping
+Compose. The candidate runs its database migration before it replaces the live
+controller override and restarts only the controller PM2 process:
 
 ```sh
 ./bin/uns controller update \
@@ -376,7 +387,20 @@ versioned GitHub Release:
 
 This replaces only the controller runtime files. It first upgrades the
 database schema and restarts the PM2 process named `controller` only after the
-schema upgrade succeeds. It does not recreate the container.
+schema upgrade succeeds. It does not recreate the container or replace its
+image.
+
+The hot-upgrade command exposes the same safe controller workflow:
+
+```sh
+./bin/uns runtime hot-upgrade --controller
+```
+
+It selects only the latest controller artifact that explicitly declares support
+for the installed Runtime version, image tag, and Node major, then asks for a
+typed confirmation. `--version <immutable-release>` selects a reviewed
+candidate but does not bypass those checks. Use `uns-bootstrap upgrade` for
+image, OS, Node, infrastructure, or security-baseline changes.
 
 `latest` means the immutable version recorded in the verified runtime
 checkout, not an unpinned controller-source branch. You can also use a specific
