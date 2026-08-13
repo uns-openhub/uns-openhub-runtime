@@ -396,11 +396,12 @@ The hot-upgrade command exposes the same safe controller workflow:
 ./bin/uns runtime hot-upgrade --controller
 ```
 
-It selects only the latest controller artifact that explicitly declares support
-for the installed Runtime version, image tag, and Node major, then asks for a
-typed confirmation. `--version <immutable-release>` selects a reviewed
-candidate but does not bypass those checks. Use `uns-bootstrap upgrade` for
-image, OS, Node, infrastructure, or security-baseline changes.
+It selects only the latest `controller-hot-<version>` prerelease that explicitly
+declares support for the installed Runtime version, image tag, and Node major,
+then asks for a typed confirmation. Normal Runtime and Bootstrap releases are
+not considered. `--version <immutable-release>` selects a reviewed candidate
+but does not bypass those checks. Use `uns-bootstrap upgrade` for image, OS,
+Node, infrastructure, or security-baseline changes.
 
 `latest` means the immutable version recorded in the verified runtime
 checkout, not an unpinned controller-source branch. You can also use a specific
