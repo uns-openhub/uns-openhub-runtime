@@ -173,11 +173,12 @@ configs/uns-openhub-controller/config-example.json
 If you create another config file, set `CONFIG_FILE` in `.env` to that file
 name.
 
-The example configuration includes public UNS OpenHub package discovery. It
-needs no GitHub token and scans public repositories under `uns-openhub`, but
-offers only packages whose default branch and tagged release both carry a
-compatible `unsDatahub` manifest. This includes core runtime packages such as
-`uns-archiver` and `uns-api-global` when they publish compatible releases.
+The example configuration includes signed public UNS OpenHub package discovery.
+It needs no GitHub token or GitHub API access. The controller verifies the
+catalog signature, filters releases by controller compatibility, and validates
+the cloned package manifest and immutable commit before deployment. This
+includes core runtime packages such as `uns-archiver` and `uns-api-global` when
+they publish compatible releases.
 Existing installations keep their local config during a runtime refresh; to
 opt in, copy the `addons.repositorySources` block from the new example into
 the active controller config, then restart the controller. Do not replace an
