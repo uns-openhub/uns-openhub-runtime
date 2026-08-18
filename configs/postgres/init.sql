@@ -4986,3 +4986,39 @@ CREATE INDEX IF NOT EXISTS idx_uns_table_schema_source
   ON public.uns_table_schema (source_kind, source_id);
 CREATE INDEX IF NOT EXISTS idx_uns_table_schema_kind
   ON public.uns_table_schema (schema_kind);
+
+-- === VERSIONED SHARED CONTROLLER CONFIGURATION =============================
+CREATE TABLE IF NOT EXISTS public.controller_shared_config (
+  scope text NOT NULL,
+  revision integer NOT NULL,
+  state text NOT NULL,
+  schema_version integer NOT NULL,
+  configuration jsonb NOT NULL,
+  checksum text NOT NULL,
+  updated_at timestamptz NOT NULL,
+  updated_by text NOT NULL,
+  source_controller text NOT NULL,
+  PRIMARY KEY (scope, revision),
+  CONSTRAINT controller_shared_config_state_chk CHECK (state IN ('draft', 'active', 'superseded')),
+  CONSTRAINT controller_shared_config_document_chk CHECK (jsonb_typeof(configuration) = 'object'),
+  CONSTRAINT controller_shared_config_checksum_chk CHECK (checksum ~ '^sha256:[0-9a-f]{64}$')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS controller_shared_config_one_active_scope_idx
+  ON public.controller_shared_config (scope) WHERE state = 'active';
+CREATE TABLE IF NOT EXISTS public.controller_shared_config_audit (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  scope text NOT NULL,
+  revision integer NOT NULL,
+  action text NOT NULL,
+  actor text NOT NULL,
+  source_controller text NOT NULL,
+  checksum text NOT NULL,
+  details jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT controller_shared_config_audit_action_chk CHECK (action IN ('draft_created', 'activated')),
+  CONSTRAINT controller_shared_config_audit_details_chk CHECK (jsonb_typeof(details) = 'object'),
+  CONSTRAINT controller_shared_config_audit_checksum_chk CHECK (checksum ~ '^sha256:[0-9a-f]{64}$'),
+  FOREIGN KEY (scope, revision) REFERENCES public.controller_shared_config(scope, revision)
+);
+CREATE INDEX IF NOT EXISTS controller_shared_config_audit_scope_revision_idx
+  ON public.controller_shared_config_audit (scope, revision DESC, id DESC);
