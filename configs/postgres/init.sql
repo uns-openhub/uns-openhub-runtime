@@ -5015,10 +5015,26 @@ CREATE TABLE IF NOT EXISTS public.controller_shared_config_audit (
   checksum text NOT NULL,
   details jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT controller_shared_config_audit_action_chk CHECK (action IN ('draft_created', 'activated')),
+  CONSTRAINT controller_shared_config_audit_action_chk CHECK (action IN ('draft_created', 'activated', 'node_status')),
   CONSTRAINT controller_shared_config_audit_details_chk CHECK (jsonb_typeof(details) = 'object'),
   CONSTRAINT controller_shared_config_audit_checksum_chk CHECK (checksum ~ '^sha256:[0-9a-f]{64}$'),
   FOREIGN KEY (scope, revision) REFERENCES public.controller_shared_config(scope, revision)
 );
 CREATE INDEX IF NOT EXISTS controller_shared_config_audit_scope_revision_idx
   ON public.controller_shared_config_audit (scope, revision DESC, id DESC);
+CREATE TABLE IF NOT EXISTS public.controller_shared_config_node_status (
+  scope text NOT NULL,
+  revision integer NOT NULL,
+  controller_name text NOT NULL,
+  state text NOT NULL,
+  checksum text NOT NULL,
+  reason_code text NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope, revision, controller_name),
+  CONSTRAINT controller_shared_config_node_status_state_chk CHECK (state IN ('applied', 'pending_restart', 'rejected')),
+  CONSTRAINT controller_shared_config_node_status_checksum_chk CHECK (checksum ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT controller_shared_config_node_status_reason_code_chk CHECK (reason_code IS NULL OR reason_code ~ '^[a-z][a-z0-9_]{0,63}$'),
+  FOREIGN KEY (scope, revision) REFERENCES public.controller_shared_config(scope, revision)
+);
+CREATE INDEX IF NOT EXISTS controller_shared_config_node_status_scope_revision_idx
+  ON public.controller_shared_config_node_status (scope, revision DESC, state, controller_name);
