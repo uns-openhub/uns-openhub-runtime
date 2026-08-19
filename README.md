@@ -376,9 +376,10 @@ moving the local branch.
 On Windows, run `uns runtime sync` from an installed copy of `uns.exe` outside
 the checkout being updated so Git does not need to replace the running binary.
 
-Update controller application code in the running container without stopping
-Compose. The candidate runs its database migration before it replaces the live
-controller override and restarts only the controller PM2 process:
+Update controller application code in the running container without invoking
+Compose or restarting the container. The candidate runs its database migration
+before it replaces the live controller override and restarts only the
+controller PM2 process:
 
 ```sh
 ./bin/uns controller update \
@@ -388,8 +389,16 @@ controller override and restarts only the controller PM2 process:
 
 This replaces only the controller runtime files. It first upgrades the
 database schema and restarts the PM2 process named `controller` only after the
-schema upgrade succeeds. It does not recreate the container or replace its
-image.
+schema upgrade succeeds. It does not recreate the container, replace its
+image, or start/stop RTT microservices. On a systemd-managed Podman host
+without `podman compose`, select the raw engine and target container directly:
+
+```sh
+./bin/uns controller update \
+  --engine podman \
+  --container uns-controller \
+  --artifact /path/to/controller-runtime-<version>.tar.gz
+```
 
 The hot-upgrade command exposes the same safe controller workflow:
 
