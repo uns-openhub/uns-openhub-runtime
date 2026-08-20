@@ -2,90 +2,90 @@
   "schemaVersion": 2,
   "product": "uns-openhub",
   "releaseEpoch": 2,
-  "version": "2.1.47",
-  "tag": "2.1.47",
-  "imageTag": "2.1.47",
+  "version": "2.1.48",
+  "tag": "2.1.48",
+  "imageTag": "2.1.48",
   "repository": "uns-openhub/uns-openhub-runtime",
   "assets": [
     {
-      "name": "controller-runtime-2.1.47.manifest.json",
-      "sha256": "75f1bf07353617fe818ce4587d9cd0fbd03494d547b778bce706342a14e29f24"
+      "name": "controller-runtime-2.1.48.manifest.json",
+      "sha256": "31a5ad879c636e84ee9481d2d69e8e603c28714e51521a5a064a938273a9b553"
     },
     {
-      "name": "controller-runtime-2.1.47.tar.gz",
-      "sha256": "0c3ad4dac6e02f3c4524fa154be0d89b194b35d852584714f78bf4c25ef0d4c4"
+      "name": "controller-runtime-2.1.48.tar.gz",
+      "sha256": "2dad62614ed89b07fd8c529a9345399f98a2b9bff4ff98263a811d746c0c8bc6"
     },
     {
-      "name": "controller-runtime-2.1.47.tar.gz.sha256",
-      "sha256": "6c0fc1a5cd0b0cf57ea7f8cb682b25e47f986242db8bf8c6e9cad762d18beb10"
+      "name": "controller-runtime-2.1.48.tar.gz.sha256",
+      "sha256": "722b67d563ce9ffc4e4d384991fb2c5c5b03317b62198d5a220a58105db5b616"
     },
     {
-      "name": "infisical-rotator-2.1.47-darwin-amd64",
+      "name": "infisical-rotator-2.1.48-darwin-amd64",
       "sha256": "d25d3cae76bf6f85c1c5309557ae6620255c006610ae10500b56b970e4d94ea3"
     },
     {
-      "name": "infisical-rotator-2.1.47-darwin-arm64",
+      "name": "infisical-rotator-2.1.48-darwin-arm64",
       "sha256": "25abeb4ed702b0580b7f5ad044cd23af54bec07b767c210c5c40e2719eb0a673"
     },
     {
-      "name": "infisical-rotator-2.1.47-linux-amd64",
+      "name": "infisical-rotator-2.1.48-linux-amd64",
       "sha256": "fe79006cf4dff5c7639d62322d1b4cd75de5f03a19d1bfd03904968bddbb6459"
     },
     {
-      "name": "infisical-rotator-2.1.47-linux-arm64",
+      "name": "infisical-rotator-2.1.48-linux-arm64",
       "sha256": "b9d9c7b7e4cf940f520bae5d1804ada2238e5ffd444a2bd6274496fcf0b6172e"
     },
     {
-      "name": "infisical-rotator-2.1.47-windows-amd64.exe",
+      "name": "infisical-rotator-2.1.48-windows-amd64.exe",
       "sha256": "531edc27dd1120cf05ba0bd7607d9a9fd0f728accb5ad6e446841fd361589596"
     },
     {
-      "name": "infisical-rotator-2.1.47-windows-arm64.exe",
+      "name": "infisical-rotator-2.1.48-windows-arm64.exe",
       "sha256": "091e8783ed82b77cbd627b10208f9cb2f0e94966ce5e7fd5f9c61f754171bd77"
     },
     {
-      "name": "uns-2.1.47-darwin-amd64",
-      "sha256": "6a4680172cd2a35f32a05bf8192ea8d039603bcb0019853f1cee50341b3abcc2"
+      "name": "uns-2.1.48-darwin-amd64",
+      "sha256": "48d894e4d1c989cb2158dd743bce79f99880f59708bfaf3e7659dfc0a3b40d7b"
     },
     {
-      "name": "uns-2.1.47-darwin-arm64",
-      "sha256": "c45d87ad80bc4a37bea34d174553b99e0de22b79b972d948d6111c650c7c1aa1"
+      "name": "uns-2.1.48-darwin-arm64",
+      "sha256": "50851818bba50566cd3b369854fc95902011166cb0f85b6ee236f4d051f74c12"
     },
     {
-      "name": "uns-2.1.47-linux-amd64",
-      "sha256": "fc9222dbab97fd52444506646a30837f3fde58105f69f018c3545b7a97cd9645"
+      "name": "uns-2.1.48-linux-amd64",
+      "sha256": "650a07a3e15ff6a9c54152c8c2e80b90cce7b2e71c806f94be5cd19a08247910"
     },
     {
-      "name": "uns-2.1.47-linux-arm64",
-      "sha256": "623e31261df89e448b1329276f2ca9aa759abc14a46cea66a083b05dc3025087"
+      "name": "uns-2.1.48-linux-arm64",
+      "sha256": "edbf08d1af73dc082f80aecf072064d4db09c1934a521ab697e476c812a8f229"
     },
     {
-      "name": "uns-2.1.47-windows-amd64.exe",
-      "sha256": "fe59832858b9846fdc71468d6ab6ceaa20d79e5fd18c0677d1feeded123d7b88"
+      "name": "uns-2.1.48-windows-amd64.exe",
+      "sha256": "9d677be1aa22a98397de034a02e173bbd68781915c2559487d1b0ef41c045a86"
     },
     {
-      "name": "uns-2.1.47-windows-arm64.exe",
-      "sha256": "dc22791cda689d9d1242695da6975ab508db32a90456bc9464cd75c92ba68fde"
+      "name": "uns-2.1.48-windows-arm64.exe",
+      "sha256": "d56b7f39d13d37393a8c9628a1790ea73ce4b6dabfa3b60e7c3fa7d8ba99fcef"
     }
   ],
   "controller": {
     "schemaVersion": 1,
     "name": "uns-openhub-controller-runtime",
-    "version": "2.1.47",
-    "packageVersion": "2.1.47",
+    "version": "2.1.48",
+    "packageVersion": "2.1.48",
     "packageName": "uns-openhub-controller",
-    "createdAt": "2026-08-20T10:07:41+02:00",
+    "createdAt": "2026-08-20T11:00:16+02:00",
     "nodeEngines": ">=22",
     "packageManager": "pnpm@10.30.3",
     "source": {
-      "commit": "1e42c6a59a82cc8fee82cac8362e2895351cfa69",
+      "commit": "38aecc6f9e41c62fb5b1e914e61c2e43a4838d34",
       "ref": "main"
     },
     "files": {
       "distFileCount": 991,
       "distIndexSha256": "a6940b9bc6ffe3afa3238a19de62e21013a951318b7f13f00a114ca26b3805ef",
       "initSqlSha256": "63549885f15988ba2938febc24a32cc47a89b649614576fc5089328b06ce3f23",
-      "packageJsonSha256": "ab2fc06a79327e2e68e41eb2314158f7b429493b6dcffd1d72f14e8e56ac2546",
+      "packageJsonSha256": "a00e4cd0f1d3bb3d81d7a55e6dec448f7df34406ea40b82bf232fb6a0dc62125",
       "pnpmLockSha256": "95b80623a509bbc813ee9f96fdedbe399bc555e3dd8c4a88ffd249dd3d5abf8d"
     }
   }
