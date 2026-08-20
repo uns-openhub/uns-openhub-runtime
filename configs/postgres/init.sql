@@ -5028,3 +5028,34 @@ CREATE TABLE IF NOT EXISTS public.rtt_process_migration_event (
 );
 CREATE INDEX IF NOT EXISTS rtt_process_migration_event_migration_idx
   ON public.rtt_process_migration_event (migration_id, id);
+
+-- === DURABLE CONTROLLER RUNTIME UPDATES ===================================
+CREATE TABLE IF NOT EXISTS public.controller_runtime_update (
+  id uuid PRIMARY KEY,
+  state text NOT NULL,
+  target_controller text NOT NULL,
+  requested_version text NOT NULL,
+  requested_by text NOT NULL,
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  CONSTRAINT controller_runtime_update_state_chk CHECK (state IN ('accepted', 'downloading', 'verified', 'activating', 'healthy', 'failed', 'needs_attention')),
+  CONSTRAINT controller_runtime_update_version_chk CHECK (requested_version ~ '^[0-9]+\.[0-9]+\.[0-9]+$'),
+  CONSTRAINT controller_runtime_update_detail_chk CHECK (jsonb_typeof(detail) = 'object')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS controller_runtime_update_active_target_idx
+  ON public.controller_runtime_update (target_controller)
+  WHERE state IN ('accepted', 'downloading', 'verified', 'activating', 'needs_attention');
+CREATE TABLE IF NOT EXISTS public.controller_runtime_update_event (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  update_id uuid NOT NULL REFERENCES public.controller_runtime_update(id) ON DELETE CASCADE,
+  state text NOT NULL,
+  actor text NOT NULL,
+  message text NOT NULL,
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT controller_runtime_update_event_detail_chk CHECK (jsonb_typeof(detail) = 'object')
+);
+CREATE INDEX IF NOT EXISTS controller_runtime_update_event_update_idx
+  ON public.controller_runtime_update_event (update_id, id);
