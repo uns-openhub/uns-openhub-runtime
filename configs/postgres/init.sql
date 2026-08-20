@@ -4986,3 +4986,45 @@ CREATE INDEX IF NOT EXISTS idx_uns_table_schema_source
   ON public.uns_table_schema (source_kind, source_id);
 CREATE INDEX IF NOT EXISTS idx_uns_table_schema_kind
   ON public.uns_table_schema (schema_kind);
+
+-- === DURABLE RTT PROCESS MIGRATIONS =======================================
+CREATE TABLE IF NOT EXISTS public.rtt_process_migration (
+  id uuid PRIMARY KEY,
+  state text NOT NULL,
+  mode text NOT NULL,
+  rtt_node text NOT NULL,
+  version text NOT NULL,
+  source_controller text NOT NULL,
+  source_instance_id text NOT NULL,
+  target_controller text NOT NULL,
+  target_instance_id text NOT NULL,
+  process_name text NOT NULL,
+  configuration_checksum text NOT NULL,
+  requested_by text NOT NULL,
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  CONSTRAINT rtt_process_migration_state_chk CHECK (state IN ('planned', 'source_stopped', 'target_starting', 'awaiting_handover', 'handover_acknowledged', 'completed', 'rollback_starting', 'rolled_back', 'failed', 'needs_attention')),
+  CONSTRAINT rtt_process_migration_mode_chk CHECK (mode IN ('safe_cold', 'hot')),
+  CONSTRAINT rtt_process_migration_checksum_chk CHECK (configuration_checksum ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT rtt_process_migration_detail_chk CHECK (jsonb_typeof(detail) = 'object')
+);
+CREATE INDEX IF NOT EXISTS rtt_process_migration_source_active_idx
+  ON public.rtt_process_migration (source_controller, rtt_node, version, source_instance_id, created_at DESC)
+  WHERE state IN ('planned', 'source_stopped', 'target_starting', 'awaiting_handover', 'handover_acknowledged', 'rollback_starting', 'needs_attention');
+CREATE INDEX IF NOT EXISTS rtt_process_migration_target_active_idx
+  ON public.rtt_process_migration (target_controller, rtt_node, version, target_instance_id, created_at DESC)
+  WHERE state IN ('planned', 'source_stopped', 'target_starting', 'awaiting_handover', 'handover_acknowledged', 'rollback_starting', 'needs_attention');
+CREATE TABLE IF NOT EXISTS public.rtt_process_migration_event (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  migration_id uuid NOT NULL REFERENCES public.rtt_process_migration(id) ON DELETE CASCADE,
+  state text NOT NULL,
+  actor text NOT NULL,
+  message text NOT NULL,
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT rtt_process_migration_event_detail_chk CHECK (jsonb_typeof(detail) = 'object')
+);
+CREATE INDEX IF NOT EXISTS rtt_process_migration_event_migration_idx
+  ON public.rtt_process_migration_event (migration_id, id);
