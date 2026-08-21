@@ -446,64 +446,10 @@ ALTER TABLE public.auth_users
 ALTER TABLE public.auth_users
   ADD COLUMN IF NOT EXISTS "isActive" boolean NOT NULL DEFAULT true;
 
--- === AUTH MACHINE IDENTITIES TABLE ==========================================
-CREATE TABLE IF NOT EXISTS public.auth_machine_identities (
-  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  "name" citext NOT NULL UNIQUE,
-  "description" text,
-  "accessRules" text[] NOT NULL DEFAULT ARRAY['#']::text[],
-  "scopes" text[] NOT NULL DEFAULT ARRAY[]::text[],
-  "expiresAt" timestamptz,
-  "isActive" boolean NOT NULL DEFAULT true,
-  "tokenVersion" integer NOT NULL DEFAULT 1,
-  "lastIssuedAt" timestamptz,
-  "createdAt" timestamptz NOT NULL DEFAULT now(),
-  "updatedAt" timestamptz NOT NULL DEFAULT now(),
-  "revokedAt" timestamptz,
-  "createdBy" text
-);
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "description" text;
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "accessRules" text[] NOT NULL DEFAULT ARRAY['#']::text[];
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "scopes" text[] NOT NULL DEFAULT ARRAY[]::text[];
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "expiresAt" timestamptz;
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "isActive" boolean NOT NULL DEFAULT true;
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "tokenVersion" integer NOT NULL DEFAULT 1;
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "lastIssuedAt" timestamptz;
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "createdAt" timestamptz NOT NULL DEFAULT now();
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "updatedAt" timestamptz NOT NULL DEFAULT now();
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "revokedAt" timestamptz;
-
-ALTER TABLE public.auth_machine_identities
-  ADD COLUMN IF NOT EXISTS "createdBy" text;
-
-CREATE INDEX IF NOT EXISTS idx_auth_machine_identities_active
-  ON public.auth_machine_identities("isActive", "name");
-
-CREATE INDEX IF NOT EXISTS idx_auth_machine_identities_expires_at
-  ON public.auth_machine_identities("expiresAt");
-
--- Canonical non-user workload identities. The compatibility migration copies
--- legacy auth_machine_identities rows and later releases can retire that table.
+-- === AUTH WORKLOAD IDENTITIES TABLE =========================================
+-- Canonical non-user identities for microservices, Controller MCP clients,
+-- and external machines. Legacy auth_machine_identities are deliberately not
+-- part of a fresh schema; the historical upgrade path remains checksum-stable.
 CREATE TABLE IF NOT EXISTS public.auth_workload_identities (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   "name" citext NOT NULL UNIQUE,
@@ -531,6 +477,32 @@ CREATE INDEX IF NOT EXISTS idx_auth_workload_identities_type
 
 CREATE INDEX IF NOT EXISTS idx_auth_workload_identities_expires_at
   ON public.auth_workload_identities("expiresAt");
+
+-- The durable binding keeps its historical column name for API compatibility,
+-- while its foreign key targets the canonical workload identity table.
+CREATE TABLE IF NOT EXISTS public.rtt_service_identity_bindings (
+  rtt_node text NOT NULL,
+  instance_id text NOT NULL,
+  machine_identity_id uuid NOT NULL
+    CONSTRAINT rtt_service_identity_bindings_workload_identity_id_fkey
+    REFERENCES public.auth_workload_identities(id) ON DELETE RESTRICT,
+  profile_fingerprint text NOT NULL,
+  last_registered_version text,
+  last_registered_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (rtt_node, instance_id),
+  UNIQUE (machine_identity_id),
+  CONSTRAINT chk_rtt_service_identity_binding_node
+    CHECK (char_length(BTRIM(rtt_node)) > 0),
+  CONSTRAINT chk_rtt_service_identity_binding_instance
+    CHECK (char_length(BTRIM(instance_id)) > 0),
+  CONSTRAINT chk_rtt_service_identity_binding_fingerprint
+    CHECK (profile_fingerprint ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_rtt_service_identity_bindings_registered_at
+  ON public.rtt_service_identity_bindings (last_registered_at DESC NULLS LAST);
 
 -- === AUTH SCOPE POLICY TABLES ===============================================
 CREATE TABLE IF NOT EXISTS public.auth_scopes (
