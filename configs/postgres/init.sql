@@ -502,6 +502,36 @@ CREATE INDEX IF NOT EXISTS idx_auth_machine_identities_active
 CREATE INDEX IF NOT EXISTS idx_auth_machine_identities_expires_at
   ON public.auth_machine_identities("expiresAt");
 
+-- Canonical non-user workload identities. The compatibility migration copies
+-- legacy auth_machine_identities rows and later releases can retire that table.
+CREATE TABLE IF NOT EXISTS public.auth_workload_identities (
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  "name" citext NOT NULL UNIQUE,
+  "identityType" text NOT NULL DEFAULT 'MICROSERVICE',
+  "description" text,
+  "accessRules" text[] NOT NULL DEFAULT ARRAY['#']::text[],
+  "scopes" text[] NOT NULL DEFAULT ARRAY[]::text[],
+  "expiresAt" timestamptz,
+  "isActive" boolean NOT NULL DEFAULT true,
+  "tokenVersion" integer NOT NULL DEFAULT 1,
+  "lastIssuedAt" timestamptz,
+  "createdAt" timestamptz NOT NULL DEFAULT now(),
+  "updatedAt" timestamptz NOT NULL DEFAULT now(),
+  "revokedAt" timestamptz,
+  "createdBy" text,
+  CONSTRAINT auth_workload_identities_type_chk
+    CHECK ("identityType" IN ('MICROSERVICE', 'CONTROLLER_MCP', 'EXTERNAL_MACHINE'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_workload_identities_active
+  ON public.auth_workload_identities("isActive", "name");
+
+CREATE INDEX IF NOT EXISTS idx_auth_workload_identities_type
+  ON public.auth_workload_identities("identityType", "name");
+
+CREATE INDEX IF NOT EXISTS idx_auth_workload_identities_expires_at
+  ON public.auth_workload_identities("expiresAt");
+
 -- === AUTH SCOPE POLICY TABLES ===============================================
 CREATE TABLE IF NOT EXISTS public.auth_scopes (
   scope text PRIMARY KEY,
