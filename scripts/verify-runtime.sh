@@ -46,10 +46,10 @@ for asset in assets:
         raise SystemExit(f"Invalid asset checksum: {asset}")
 
 controller = manifest.get("controller", {})
-if controller.get("version") != version:
-    raise SystemExit("Controller artifact version does not match runtime")
-if not controller.get("packageVersion"):
-    raise SystemExit("Controller package provenance is incomplete")
+if controller.get("version") != image_tag:
+    raise SystemExit("Controller artifact version does not match image tag")
+if controller.get("packageVersion") != controller.get("version"):
+    raise SystemExit("Controller artifact package version does not match controller provenance")
 if not controller.get("source", {}).get("commit") or not controller.get("createdAt"):
     raise SystemExit("Controller provenance is incomplete")
 print(f"Validated {len(paths)} JSON files and {len(assets)} release assets.")
