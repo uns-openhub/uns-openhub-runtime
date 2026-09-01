@@ -525,7 +525,12 @@ VALUES
   ('read:uns'),
   ('export:uns-reference'),
   ('export:uns-reference:all'),
-  ('platform-packages:install:tenant:default')
+  ('platform-packages:install:tenant:default'),
+  ('platform-packages:upgrade:tenant:default'),
+  ('platform-packages:rollback:tenant:default'),
+  ('platform-overlays:write:tenant:default'),
+  ('platform-schema:legacy-reconcile:tenant:default'),
+  ('platform-packages:uninstall:tenant:default')
 ON CONFLICT (scope) DO NOTHING;
 
 INSERT INTO public.auth_role_scopes(role, scope)
@@ -533,6 +538,11 @@ VALUES
   ('admin', 'read:uns'),
   ('admin', 'export:uns-reference'),
   ('admin', 'platform-packages:install:tenant:default'),
+  ('admin', 'platform-packages:upgrade:tenant:default'),
+  ('admin', 'platform-packages:rollback:tenant:default'),
+  ('admin', 'platform-overlays:write:tenant:default'),
+  ('admin', 'platform-schema:legacy-reconcile:tenant:default'),
+  ('admin', 'platform-packages:uninstall:tenant:default'),
   ('operator', 'export:uns-reference')
 ON CONFLICT (role, scope) DO NOTHING;
 
@@ -1894,6 +1904,252 @@ CREATE TABLE IF NOT EXISTS public.platform_semantic_definition_overlay (
 CREATE INDEX IF NOT EXISTS idx_platform_semantic_definition_overlay_base
   ON public.platform_semantic_definition_overlay
     (base_package_id, base_package_version, definition_kind, qualified_key);
+
+CREATE TABLE IF NOT EXISTS public.schema_definition_source (
+  scope_key text NOT NULL REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  definition_kind text NOT NULL,
+  definition_key text NOT NULL,
+  field_path text NOT NULL DEFAULT '',
+  source_kind text NOT NULL,
+  source_id text NOT NULL,
+  source_version text NOT NULL DEFAULT '',
+  content_digest text NOT NULL DEFAULT '',
+  authority_level text NOT NULL,
+  trust_status text NOT NULL DEFAULT 'not-applicable',
+  status text NOT NULL DEFAULT 'active',
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (
+    scope_key, definition_kind, definition_key, field_path,
+    source_kind, source_id, source_version, content_digest
+  ),
+  CONSTRAINT chk_schema_definition_source_definition_kind
+    CHECK (definition_kind IN (
+      'asset', 'attribute', 'object_type', 'relationship', 'measurement_unit',
+      'state', 'event_type', 'action', 'view', 'navigation', 'policy'
+    )),
+  CONSTRAINT chk_schema_definition_source_kind
+    CHECK (source_kind IN ('system', 'package', 'custom', 'service', 'mqtt', 'legacy-bridge')),
+  CONSTRAINT chk_schema_definition_source_authority
+    CHECK (authority_level IN ('authoritative', 'overlay', 'proposal', 'observation', 'compatibility')),
+  CONSTRAINT chk_schema_definition_source_trust
+    CHECK (trust_status IN ('trusted', 'untrusted', 'revoked', 'not-applicable')),
+  CONSTRAINT chk_schema_definition_source_status
+    CHECK (status IN ('active', 'stale', 'ignored')),
+  CONSTRAINT chk_schema_definition_source_digest
+    CHECK (content_digest = '' OR content_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_schema_definition_source_seen_range
+    CHECK (last_seen_at >= first_seen_at)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_schema_definition_source_active
+  ON public.schema_definition_source
+    (scope_key, definition_kind, definition_key, field_path, source_kind, source_id)
+  WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_schema_definition_source_lookup
+  ON public.schema_definition_source
+    (scope_key, definition_kind, definition_key, status, source_kind);
+
+-- Current tenant-owned definitions. Immutable history is captured by
+-- tenant_schema_customization_revision. Reviewed service adoption copies
+-- declarative content here without writing package or legacy projections.
+CREATE TABLE IF NOT EXISTS public.tenant_schema_definition (
+  scope_key text NOT NULL REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  definition_kind text NOT NULL,
+  qualified_key text NOT NULL,
+  content_digest text NOT NULL,
+  definition_json jsonb NOT NULL,
+  origin_kind text NOT NULL,
+  source_id text NOT NULL,
+  source_version text NOT NULL,
+  source_contract_digest text NOT NULL,
+  schema_id text NOT NULL,
+  updated_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, definition_kind, qualified_key),
+  CONSTRAINT chk_tenant_schema_definition_kind
+    CHECK (definition_kind IN (
+      'asset', 'attribute', 'object_type', 'relationship', 'measurement_unit',
+      'state', 'event_type', 'action', 'view', 'navigation', 'policy'
+    )),
+  CONSTRAINT chk_tenant_schema_definition_origin
+    CHECK (origin_kind IN ('custom', 'service')),
+  CONSTRAINT chk_tenant_schema_definition_content_digest
+    CHECK (content_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_tenant_schema_definition_contract_digest
+    CHECK (
+      (origin_kind = 'service' AND source_contract_digest ~ '^sha256:[0-9a-f]{64}$') OR
+      (origin_kind = 'custom' AND source_contract_digest = '')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_schema_definition_source
+  ON public.tenant_schema_definition (scope_key, origin_kind, source_id, source_contract_digest);
+
+-- One immutable snapshot for every actually changed tenant customization.
+-- Package artifacts remain immutable; this ledger pins the active package
+-- composition and the tenant-owned overlays used to resolve the effective
+-- schema. Draft/custom-definition/service-adoption fields are additive so the
+-- same revision contract can grow without changing legacy schema tables.
+CREATE TABLE IF NOT EXISTS public.tenant_schema_customization_revision (
+  scope_key text NOT NULL REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  revision bigint NOT NULL CHECK (revision > 0),
+  revision_digest text NOT NULL,
+  status text NOT NULL DEFAULT 'applied',
+  base_profile_id text NULL,
+  base_profile_digest text NULL,
+  operation_id uuid NOT NULL,
+  request_digest text NOT NULL,
+  trigger_kind text NOT NULL,
+  customization_json jsonb NOT NULL,
+  changed_by text NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now(),
+  superseded_at timestamptz NULL,
+  PRIMARY KEY (scope_key, revision),
+  UNIQUE (scope_key, operation_id),
+  CONSTRAINT chk_tenant_schema_customization_revision_digest
+    CHECK (revision_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_tenant_schema_customization_request_digest
+    CHECK (request_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_tenant_schema_customization_profile_digest
+    CHECK (base_profile_digest IS NULL OR base_profile_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_tenant_schema_customization_status
+    CHECK (status IN ('applied', 'superseded')),
+  CONSTRAINT chk_tenant_schema_customization_trigger
+    CHECK (trigger_kind IN ('semantic-overlay', 'customization', 'service-adoption', 'reset', 'rollback', 'legacy-projection')),
+  CONSTRAINT chk_tenant_schema_customization_state
+    CHECK (
+      (status = 'applied' AND superseded_at IS NULL) OR
+      (status = 'superseded' AND superseded_at IS NOT NULL)
+    )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tenant_schema_customization_applied
+  ON public.tenant_schema_customization_revision (scope_key)
+  WHERE status = 'applied';
+
+CREATE INDEX IF NOT EXISTS idx_tenant_schema_customization_history
+  ON public.tenant_schema_customization_revision (scope_key, revision DESC);
+
+-- One explicit owner and optional tenant revision binding for the remaining
+-- global mutable schema compatibility projection. The initial record is
+-- deliberately unbound: package activation, tenant customization, and MQTT
+-- discovery cannot claim this global bridge implicitly.
+CREATE TABLE IF NOT EXISTS public.legacy_schema_projection_state (
+  projection_key text PRIMARY KEY,
+  owner_id text NOT NULL,
+  lifecycle_state text NOT NULL DEFAULT 'unbound',
+  selected_scope_key text NULL,
+  selected_revision bigint NULL,
+  selected_revision_digest text NULL,
+  projection_version bigint NOT NULL DEFAULT 1 CHECK (projection_version > 0),
+  updated_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT chk_legacy_schema_projection_key
+    CHECK (projection_key = 'global-compatibility'),
+  CONSTRAINT chk_legacy_schema_projection_owner
+    CHECK (owner_id = 'controller:global-schema-catalog'),
+  CONSTRAINT chk_legacy_schema_projection_lifecycle
+    CHECK (lifecycle_state IN ('unbound', 'bound', 'retired')),
+  CONSTRAINT chk_legacy_schema_projection_revision_digest
+    CHECK (
+      selected_revision_digest IS NULL OR
+      selected_revision_digest ~ '^sha256:[0-9a-f]{64}$'
+    ),
+  CONSTRAINT chk_legacy_schema_projection_binding
+    CHECK (
+      (
+        lifecycle_state = 'bound' AND
+        selected_scope_key IS NOT NULL AND
+        selected_revision IS NOT NULL AND
+        selected_revision_digest IS NOT NULL
+      ) OR (
+        lifecycle_state IN ('unbound', 'retired') AND
+        selected_scope_key IS NULL AND
+        selected_revision IS NULL AND
+        selected_revision_digest IS NULL
+      )
+    ),
+  CONSTRAINT fk_legacy_schema_projection_revision
+    FOREIGN KEY (selected_scope_key, selected_revision)
+    REFERENCES public.tenant_schema_customization_revision(scope_key, revision)
+    ON DELETE RESTRICT
+);
+
+INSERT INTO public.legacy_schema_projection_state
+  (projection_key, owner_id, lifecycle_state, updated_by)
+VALUES
+  ('global-compatibility', 'controller:global-schema-catalog', 'unbound', 'system:init')
+ON CONFLICT (projection_key) DO NOTHING;
+
+-- Immutable before/after evidence for every mutation of the remaining global
+-- compatibility projection. Semantic snapshots make rollback independent of
+-- current package activation or MQTT discovery state.
+CREATE TABLE IF NOT EXISTS public.legacy_schema_projection_revision (
+  revision bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  operation_id uuid NOT NULL UNIQUE,
+  operation_kind text NOT NULL,
+  scope_key text NOT NULL REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  target_scope_key text NULL,
+  target_customization_revision bigint NULL,
+  target_revision_digest text NULL,
+  projection_version bigint NOT NULL CHECK (projection_version > 0),
+  expected_plan_digest text NOT NULL,
+  request_digest text NOT NULL,
+  before_state_json jsonb NOT NULL,
+  after_state_json jsonb NOT NULL,
+  before_snapshot_json jsonb NOT NULL,
+  after_snapshot_json jsonb NOT NULL,
+  before_snapshot_digest text NOT NULL,
+  after_snapshot_digest text NOT NULL,
+  changed_by text NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now(),
+  rolled_back_from_revision bigint NULL,
+  CONSTRAINT chk_legacy_schema_projection_revision_operation
+    CHECK (operation_kind IN ('replace', 'retire', 'rollback')),
+  CONSTRAINT chk_legacy_schema_projection_revision_target
+    CHECK (
+      (
+        target_scope_key IS NULL AND
+        target_customization_revision IS NULL AND
+        target_revision_digest IS NULL
+      ) OR (
+        target_scope_key IS NOT NULL AND
+        target_customization_revision IS NOT NULL AND
+        target_revision_digest IS NOT NULL
+      )
+    ),
+  CONSTRAINT chk_legacy_schema_projection_revision_target_digest
+    CHECK (target_revision_digest IS NULL OR target_revision_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_legacy_schema_projection_revision_plan_digest
+    CHECK (expected_plan_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_legacy_schema_projection_revision_request_digest
+    CHECK (request_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_legacy_schema_projection_revision_before_digest
+    CHECK (before_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_legacy_schema_projection_revision_after_digest
+    CHECK (after_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT fk_legacy_schema_projection_revision_target
+    FOREIGN KEY (target_scope_key, target_customization_revision)
+    REFERENCES public.tenant_schema_customization_revision(scope_key, revision)
+    ON DELETE RESTRICT,
+  CONSTRAINT fk_legacy_schema_projection_revision_rollback
+    FOREIGN KEY (rolled_back_from_revision)
+    REFERENCES public.legacy_schema_projection_revision(revision)
+    ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_legacy_schema_projection_revision_applied
+  ON public.legacy_schema_projection_revision (applied_at DESC, revision DESC);
+
+CREATE INDEX IF NOT EXISTS idx_legacy_schema_projection_revision_scope
+  ON public.legacy_schema_projection_revision (scope_key, revision DESC);
 
 CREATE TABLE IF NOT EXISTS public.platform_package_audit (
   id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
