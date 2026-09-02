@@ -2792,6 +2792,57 @@ BEGIN
 END
 $$;
 
+-- Exact historical solution-profile bytes retained only for recovering an
+-- installed package set whose profile is no longer in the current catalog.
+-- The artifact is append-only and does not activate or mutate packages.
+CREATE TABLE IF NOT EXISTS public.recovered_solution_profile_artifact (
+  scope_key text NOT NULL REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  profile_id text NOT NULL,
+  profile_version text NOT NULL,
+  profile_digest text NOT NULL,
+  manifest_text text NOT NULL,
+  manifest_json jsonb NOT NULL,
+  package_set_digest text NOT NULL,
+  recovered_by text NOT NULL,
+  recovered_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, profile_id, profile_digest),
+  CONSTRAINT chk_recovered_solution_profile_identity
+    CHECK (length(btrim(profile_id)) > 0 AND length(btrim(profile_version)) > 0),
+  CONSTRAINT chk_recovered_solution_profile_digest
+    CHECK (profile_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_recovered_solution_profile_package_set_digest
+    CHECK (package_set_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_recovered_solution_profile_actor
+    CHECK (length(btrim(recovered_by)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recovered_solution_profile_artifact_time
+  ON public.recovered_solution_profile_artifact (scope_key, recovered_at DESC);
+
+CREATE OR REPLACE FUNCTION public.reject_recovered_solution_profile_artifact_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'recovered solution-profile artifacts are immutable'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_recovered_solution_profile_artifact_immutable'
+      AND tgrelid = 'public.recovered_solution_profile_artifact'::regclass
+  ) THEN
+    CREATE TRIGGER trg_recovered_solution_profile_artifact_immutable
+      BEFORE UPDATE OR DELETE ON public.recovered_solution_profile_artifact
+      FOR EACH ROW EXECUTE FUNCTION public.reject_recovered_solution_profile_artifact_mutation();
+  END IF;
+END
+$$;
+
 -- P2.5 compatibility migration: the 1.x setup path had one implicit
 -- controller scope. Preserve its data under the explicit default tenant before
 -- tenant and activation foreign keys are validated.
