@@ -523,6 +523,7 @@ CREATE INDEX IF NOT EXISTS idx_auth_role_scopes_scope
 INSERT INTO public.auth_scopes(scope)
 VALUES
   ('read:uns'),
+  ('identity:asset:publish'),
   ('export:uns-reference'),
   ('export:uns-reference:all'),
   ('platform-packages:install:tenant:default'),
@@ -1003,6 +1004,7 @@ CREATE TABLE IF NOT EXISTS public.object_type_schema (
   descriptions_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   search_weight integer NOT NULL DEFAULT 100,
   status text NOT NULL DEFAULT 'draft',
+  identity_mode text NULL,
   schema_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -1014,7 +1016,9 @@ CREATE TABLE IF NOT EXISTS public.object_type_schema (
   reviewed_by text NULL,
   reviewed_at timestamptz NULL,
   CONSTRAINT uq_object_type_schema_key UNIQUE ("key"),
-  CONSTRAINT chk_object_type_schema_status CHECK (status IN ('draft', 'active', 'deprecated'))
+  CONSTRAINT chk_object_type_schema_status CHECK (status IN ('draft', 'active', 'deprecated')),
+  CONSTRAINT chk_object_type_schema_identity_mode
+    CHECK (identity_mode IS NULL OR identity_mode IN ('asset-scoped', 'independent'))
 );
 
 ALTER TABLE public.object_type_schema
@@ -1029,6 +1033,8 @@ ALTER TABLE public.object_type_schema
   ADD COLUMN IF NOT EXISTS search_weight integer NOT NULL DEFAULT 100;
 ALTER TABLE public.object_type_schema
   ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'draft';
+ALTER TABLE public.object_type_schema
+  ADD COLUMN IF NOT EXISTS identity_mode text NULL;
 ALTER TABLE public.object_type_schema
   ADD COLUMN IF NOT EXISTS schema_json jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE public.object_type_schema
@@ -3435,6 +3441,272 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_entity_placement_current_primary_entity
 CREATE UNIQUE INDEX IF NOT EXISTS uq_entity_placement_current_primary_namespace
   ON public.entity_placement (scope_key, namespace_node_id)
   WHERE valid_to IS NULL AND placement_kind = 'primary';
+
+-- Stable entity observation ownership is separate from namespace placement.
+-- These tables are additive; MQTT identity claims are enabled only in a later
+-- feature-gated controller slice.
+CREATE SEQUENCE IF NOT EXISTS public.entity_observation_binding_revision_seq AS bigint;
+
+CREATE TABLE IF NOT EXISTS public.entity_observation_binding (
+  observation_binding_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  stable_entity_id uuid NOT NULL,
+  binding_kind text NOT NULL,
+  topic_path text NOT NULL,
+  source_workload_identity_id uuid NOT NULL,
+  source_authority text NOT NULL,
+  source_priority integer NOT NULL DEFAULT 100,
+  resolution_basis text NOT NULL,
+  time_basis text NOT NULL,
+  valid_from timestamptz NOT NULL,
+  valid_to timestamptz NULL,
+  revision bigint NOT NULL DEFAULT nextval('public.entity_observation_binding_revision_seq'),
+  binding_digest text NOT NULL,
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  created_by text NULL,
+  UNIQUE (scope_key, observation_binding_id),
+  FOREIGN KEY (scope_key) REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  FOREIGN KEY (source_workload_identity_id)
+    REFERENCES public.auth_workload_identities("id") ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_observation_binding_kind
+    CHECK (binding_kind IN ('asset-prefix', 'attribute-topic')),
+  CONSTRAINT chk_entity_observation_binding_topic
+    CHECK (length(btrim(topic_path)) > 0 AND topic_path = btrim(topic_path)
+      AND topic_path !~ '(^/|/$|//)' AND topic_path !~ '[+#]'),
+  CONSTRAINT chk_entity_observation_binding_authority
+    CHECK (source_authority IN ('transport-authenticated', 'reviewed-import', 'controller-legacy')),
+  CONSTRAINT chk_entity_observation_binding_priority CHECK (source_priority BETWEEN 0 AND 1000),
+  CONSTRAINT chk_entity_observation_binding_resolution
+    CHECK (resolution_basis IN ('controller-issued-id', 'legacy-path-provisioning',
+      'reviewed-reconciliation', 'deterministic-asset-anchor')),
+  CONSTRAINT chk_entity_observation_binding_time
+    CHECK (time_basis IN ('source-event-time', 'controller-receipt-time', 'legacy-unknown-start')),
+  CONSTRAINT chk_entity_observation_binding_interval CHECK (valid_to IS NULL OR valid_to > valid_from),
+  CONSTRAINT chk_entity_observation_binding_revision CHECK (revision > 0),
+  CONSTRAINT chk_entity_observation_binding_digest CHECK (binding_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_observation_binding_resolve
+  ON public.entity_observation_binding
+    (scope_key, binding_kind, topic_path, valid_from DESC, valid_to DESC NULLS FIRST);
+CREATE INDEX IF NOT EXISTS idx_entity_observation_binding_entity
+  ON public.entity_observation_binding
+    (scope_key, stable_entity_id, valid_from DESC, valid_to DESC NULLS FIRST);
+CREATE INDEX IF NOT EXISTS idx_entity_observation_binding_source
+  ON public.entity_observation_binding
+    (source_workload_identity_id, scope_key, binding_kind, topic_path);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_entity_observation_binding_current_source
+  ON public.entity_observation_binding
+    (scope_key, stable_entity_id, binding_kind, topic_path, source_workload_identity_id)
+  WHERE valid_to IS NULL;
+
+CREATE OR REPLACE FUNCTION public.bump_entity_observation_binding_revision()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.revision <= OLD.revision THEN
+    NEW.revision := nextval('public.entity_observation_binding_revision_seq');
+  END IF;
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_entity_observation_binding_revision ON public.entity_observation_binding;
+CREATE TRIGGER trg_entity_observation_binding_revision
+  BEFORE UPDATE ON public.entity_observation_binding
+  FOR EACH ROW EXECUTE FUNCTION public.bump_entity_observation_binding_revision();
+
+CREATE OR REPLACE FUNCTION public.enforce_entity_observation_binding_ownership()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended(NEW.scope_key || ':' || NEW.binding_kind || ':' || NEW.topic_path, 0)
+  );
+  IF EXISTS (
+    SELECT 1 FROM public.entity_observation_binding existing
+     WHERE existing.scope_key = NEW.scope_key
+       AND existing.binding_kind = NEW.binding_kind
+       AND existing.topic_path = NEW.topic_path
+       AND existing.stable_entity_id <> NEW.stable_entity_id
+       AND existing.observation_binding_id <> NEW.observation_binding_id
+       AND tstzrange(existing.valid_from, existing.valid_to, '[)')
+           && tstzrange(NEW.valid_from, NEW.valid_to, '[)')
+  ) THEN
+    RAISE EXCEPTION 'observation topic interval is already owned by another entity'
+      USING ERRCODE = '23505';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_entity_observation_binding_ownership ON public.entity_observation_binding;
+CREATE TRIGGER trg_entity_observation_binding_ownership
+  BEFORE INSERT OR UPDATE OF scope_key, stable_entity_id, binding_kind, topic_path, valid_from, valid_to
+  ON public.entity_observation_binding
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_entity_observation_binding_ownership();
+
+CREATE TABLE IF NOT EXISTS public.asset_identity_transition (
+  transition_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  canonical_stable_entity_id uuid NOT NULL,
+  provisional_stable_entity_id uuid NULL,
+  old_asset_path text NOT NULL,
+  candidate_asset_path text NOT NULL,
+  source_workload_identity_id uuid NOT NULL,
+  state text NOT NULL DEFAULT 'observing',
+  first_new_observation_at timestamptz NOT NULL,
+  last_new_observation_at timestamptz NOT NULL,
+  last_old_observation_at timestamptz NULL,
+  process_heartbeat_at timestamptz NULL,
+  handover_observed_at timestamptz NULL,
+  grace_deadline timestamptz NULL,
+  liveness_evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  decision text NOT NULL DEFAULT 'pending',
+  decision_reason text NULL,
+  decided_at timestamptz NULL,
+  decided_by text NULL,
+  policy_version integer NOT NULL,
+  revision bigint NOT NULL DEFAULT 1,
+  transition_digest text NOT NULL,
+  audit_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, transition_id),
+  FOREIGN KEY (scope_key) REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, canonical_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, provisional_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  FOREIGN KEY (source_workload_identity_id)
+    REFERENCES public.auth_workload_identities("id") ON DELETE RESTRICT,
+  CONSTRAINT chk_asset_identity_transition_distinct_entities
+    CHECK (provisional_stable_entity_id IS NULL
+      OR provisional_stable_entity_id <> canonical_stable_entity_id),
+  CONSTRAINT chk_asset_identity_transition_paths
+    CHECK (length(btrim(old_asset_path)) > 0 AND length(btrim(candidate_asset_path)) > 0
+      AND old_asset_path = btrim(old_asset_path) AND candidate_asset_path = btrim(candidate_asset_path)
+      AND old_asset_path !~ '(^/|/$|//|[+#])' AND candidate_asset_path !~ '(^/|/$|//|[+#])'
+      AND old_asset_path <> candidate_asset_path),
+  CONSTRAINT chk_asset_identity_transition_state
+    CHECK (state IN ('observing', 'grace', 'ready', 'accepted', 'rejected', 'conflict', 'expired')),
+  CONSTRAINT chk_asset_identity_transition_observation_order
+    CHECK (last_new_observation_at >= first_new_observation_at),
+  CONSTRAINT chk_asset_identity_transition_grace
+    CHECK (grace_deadline IS NULL OR grace_deadline >= first_new_observation_at),
+  CONSTRAINT chk_asset_identity_transition_decision
+    CHECK (decision IN ('pending', 'automatic-cutover', 'review-accepted', 'review-rejected', 'conflict')),
+  CONSTRAINT chk_asset_identity_transition_decision_audit
+    CHECK ((decision = 'pending' AND decided_at IS NULL AND decided_by IS NULL)
+      OR (decision <> 'pending' AND decided_at IS NOT NULL)),
+  CONSTRAINT chk_asset_identity_transition_policy CHECK (policy_version > 0),
+  CONSTRAINT chk_asset_identity_transition_revision CHECK (revision > 0),
+  CONSTRAINT chk_asset_identity_transition_digest CHECK (transition_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_asset_identity_transition_active_candidate
+  ON public.asset_identity_transition
+    (scope_key, canonical_stable_entity_id, candidate_asset_path)
+  WHERE state IN ('observing', 'grace', 'ready');
+CREATE INDEX IF NOT EXISTS idx_asset_identity_transition_resume
+  ON public.asset_identity_transition (scope_key, state, grace_deadline, updated_at);
+CREATE INDEX IF NOT EXISTS idx_asset_identity_transition_source
+  ON public.asset_identity_transition (source_workload_identity_id, scope_key, state);
+
+CREATE TABLE IF NOT EXISTS public.asset_identity_review_decision (
+  review_decision_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  candidate_key text NOT NULL,
+  canonical_stable_entity_id uuid NOT NULL,
+  provisional_stable_entity_id uuid NOT NULL,
+  old_asset_path text NOT NULL,
+  candidate_asset_path text NOT NULL,
+  decision text NOT NULL,
+  evidence_digest text NOT NULL,
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  decided_at timestamptz NOT NULL,
+  decided_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, candidate_key),
+  UNIQUE (scope_key, provisional_stable_entity_id),
+  FOREIGN KEY (scope_key) REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, canonical_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, provisional_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_asset_identity_review_distinct_entities
+    CHECK (canonical_stable_entity_id <> provisional_stable_entity_id),
+  CONSTRAINT chk_asset_identity_review_paths
+    CHECK (length(btrim(old_asset_path)) > 0 AND length(btrim(candidate_asset_path)) > 0
+      AND old_asset_path = btrim(old_asset_path) AND candidate_asset_path = btrim(candidate_asset_path)
+      AND old_asset_path !~ '(^/|/$|//|[+#])' AND candidate_asset_path !~ '(^/|/$|//|[+#])'
+      AND old_asset_path <> candidate_asset_path),
+  CONSTRAINT chk_asset_identity_review_decision CHECK (decision IN ('accepted', 'rejected')),
+  CONSTRAINT chk_asset_identity_review_candidate_key CHECK (candidate_key ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_asset_identity_review_evidence_digest CHECK (evidence_digest ~ '^sha256:[0-9a-f]{64}$'),
+  CONSTRAINT chk_asset_identity_review_actor CHECK (length(btrim(decided_by)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_identity_review_decision_time
+  ON public.asset_identity_review_decision (scope_key, decided_at DESC);
+
+CREATE OR REPLACE FUNCTION public.bump_asset_identity_transition_revision()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.revision <= OLD.revision THEN
+    NEW.revision := OLD.revision + 1;
+  END IF;
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_asset_identity_transition_revision ON public.asset_identity_transition;
+CREATE TRIGGER trg_asset_identity_transition_revision
+  BEFORE UPDATE ON public.asset_identity_transition
+  FOR EACH ROW EXECUTE FUNCTION public.bump_asset_identity_transition_revision();
+
+CREATE TABLE IF NOT EXISTS public.entity_binding_invalidation_outbox (
+  outbox_event_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  transition_id uuid NOT NULL,
+  binding_revision bigint NOT NULL,
+  topic_paths jsonb NOT NULL,
+  payload_json jsonb NOT NULL,
+  delivery_status text NOT NULL DEFAULT 'pending',
+  attempt_count integer NOT NULL DEFAULT 0,
+  last_error_code text NULL,
+  published_at timestamptz NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, transition_id),
+  FOREIGN KEY (scope_key) REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, transition_id)
+    REFERENCES public.asset_identity_transition(scope_key, transition_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_binding_invalidation_revision CHECK (binding_revision > 0),
+  CONSTRAINT chk_entity_binding_invalidation_topics
+    CHECK (jsonb_typeof(topic_paths) = 'array' AND jsonb_array_length(topic_paths) > 0),
+  CONSTRAINT chk_entity_binding_invalidation_payload CHECK (jsonb_typeof(payload_json) = 'object'),
+  CONSTRAINT chk_entity_binding_invalidation_delivery
+    CHECK (delivery_status IN ('pending', 'published')),
+  CONSTRAINT chk_entity_binding_invalidation_attempts CHECK (attempt_count >= 0),
+  CONSTRAINT chk_entity_binding_invalidation_publication
+    CHECK ((delivery_status = 'published' AND published_at IS NOT NULL)
+      OR (delivery_status = 'pending' AND published_at IS NULL))
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_binding_invalidation_delivery
+  ON public.entity_binding_invalidation_outbox
+    (delivery_status, binding_revision, created_at, outbox_event_id);
 
 CREATE TABLE IF NOT EXISTS public.entity_migration_ledger (
   migration_ledger_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
