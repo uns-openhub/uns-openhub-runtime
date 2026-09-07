@@ -2,70 +2,70 @@
   "schemaVersion": 2,
   "product": "uns-openhub",
   "releaseEpoch": 2,
-  "version": "2.1.71",
-  "tag": "2.1.71",
+  "version": "2.1.72",
+  "tag": "2.1.72",
   "imageTag": "2.1.71",
   "repository": "uns-openhub/uns-openhub-runtime",
   "assets": [
     {
-      "name": "controller-runtime-2.1.71.manifest.json",
+      "name": "controller-runtime-2.1.72.manifest.json",
       "sha256": "dafa6b8ec7451062ecd60ea344dac36183e76a70846c64c6c45de292fbbda0d7"
     },
     {
-      "name": "controller-runtime-2.1.71.tar.gz",
+      "name": "controller-runtime-2.1.72.tar.gz",
       "sha256": "478d495f2c8d56328c11dcfa70e47d3715bbd10db5eb628afedc533ba4fc27b4"
     },
     {
-      "name": "controller-runtime-2.1.71.tar.gz.sha256",
+      "name": "controller-runtime-2.1.72.tar.gz.sha256",
       "sha256": "ddd7e8ac1ca50221ec5e83e8eb4b64e878127d4cfdd83c40a306c90b9724ac0b"
     },
     {
-      "name": "infisical-rotator-2.1.71-darwin-amd64",
+      "name": "infisical-rotator-2.1.72-darwin-amd64",
       "sha256": "d25d3cae76bf6f85c1c5309557ae6620255c006610ae10500b56b970e4d94ea3"
     },
     {
-      "name": "infisical-rotator-2.1.71-darwin-arm64",
+      "name": "infisical-rotator-2.1.72-darwin-arm64",
       "sha256": "25abeb4ed702b0580b7f5ad044cd23af54bec07b767c210c5c40e2719eb0a673"
     },
     {
-      "name": "infisical-rotator-2.1.71-linux-amd64",
+      "name": "infisical-rotator-2.1.72-linux-amd64",
       "sha256": "fe79006cf4dff5c7639d62322d1b4cd75de5f03a19d1bfd03904968bddbb6459"
     },
     {
-      "name": "infisical-rotator-2.1.71-linux-arm64",
+      "name": "infisical-rotator-2.1.72-linux-arm64",
       "sha256": "b9d9c7b7e4cf940f520bae5d1804ada2238e5ffd444a2bd6274496fcf0b6172e"
     },
     {
-      "name": "infisical-rotator-2.1.71-windows-amd64.exe",
+      "name": "infisical-rotator-2.1.72-windows-amd64.exe",
       "sha256": "531edc27dd1120cf05ba0bd7607d9a9fd0f728accb5ad6e446841fd361589596"
     },
     {
-      "name": "infisical-rotator-2.1.71-windows-arm64.exe",
+      "name": "infisical-rotator-2.1.72-windows-arm64.exe",
       "sha256": "091e8783ed82b77cbd627b10208f9cb2f0e94966ce5e7fd5f9c61f754171bd77"
     },
     {
-      "name": "uns-2.1.71-darwin-amd64",
-      "sha256": "27b0dbb04ab7f3fe5fd1a47eeb73eea8ab44b223c311446fb5ebe8f4adf63109"
+      "name": "uns-2.1.72-darwin-amd64",
+      "sha256": "ef9f9cf7c39102d066c7c9fef60c1f75f2970880e25edb388fa908586eebaa15"
     },
     {
-      "name": "uns-2.1.71-darwin-arm64",
-      "sha256": "c076f22f77371ec3b935b459d576af8291b655cbe34f85a3d89e2f7429f2d92a"
+      "name": "uns-2.1.72-darwin-arm64",
+      "sha256": "2c9aaa0aa63f1160e5d0771ad28f9b7e35116de1a5c24abe6fb6d1aeac22fd89"
     },
     {
-      "name": "uns-2.1.71-linux-amd64",
-      "sha256": "d5c827abeefc1e45a83e36cbc2111f8e4851857fcd5587714db0e7662695fc45"
+      "name": "uns-2.1.72-linux-amd64",
+      "sha256": "7b6e8f7591161cc8db5e55073fb90151dae4b2c4e165e0b1745ef90bfe683cd9"
     },
     {
-      "name": "uns-2.1.71-linux-arm64",
-      "sha256": "b9cb2f8028866472ec30acb3d3a55dc06d5713a656b150a59169a503990da0c7"
+      "name": "uns-2.1.72-linux-arm64",
+      "sha256": "6619548c496d0f4e456cbf3cfcfaed67defb949774c4e88e2e3715d3b9b8a967"
     },
     {
-      "name": "uns-2.1.71-windows-amd64.exe",
-      "sha256": "26e8d9fd861531794bbd04b796dbeb1608f3b51912f07f8a015b2646f4f19f81"
+      "name": "uns-2.1.72-windows-amd64.exe",
+      "sha256": "6025f6b0b7ea316a44572ffc36f268039425ac0d1a6f18bc7c0ef245a401eb6e"
     },
     {
-      "name": "uns-2.1.71-windows-arm64.exe",
-      "sha256": "cc1431d1058154ab1c94978412e02080bd776675fa84a8376eeace8c9f288b4e"
+      "name": "uns-2.1.72-windows-arm64.exe",
+      "sha256": "2bd646c71bc8a19d6b2094ba45e56a6a77df0a0abda724ef6fd774385547df9e"
     }
   ],
   "controller": {
