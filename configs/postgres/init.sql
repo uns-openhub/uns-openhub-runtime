@@ -3453,7 +3453,7 @@ CREATE TABLE IF NOT EXISTS public.entity_observation_binding (
   stable_entity_id uuid NOT NULL,
   binding_kind text NOT NULL,
   topic_path text NOT NULL,
-  source_workload_identity_id uuid NOT NULL,
+  source_workload_identity_id uuid NULL,
   source_authority text NOT NULL,
   source_priority integer NOT NULL DEFAULT 100,
   resolution_basis text NOT NULL,
@@ -3479,6 +3479,8 @@ CREATE TABLE IF NOT EXISTS public.entity_observation_binding (
       AND topic_path !~ '(^/|/$|//)' AND topic_path !~ '[+#]'),
   CONSTRAINT chk_entity_observation_binding_authority
     CHECK (source_authority IN ('transport-authenticated', 'reviewed-import', 'controller-legacy')),
+  CONSTRAINT chk_entity_observation_binding_source_identity
+    CHECK (source_workload_identity_id IS NOT NULL OR source_authority = 'controller-legacy'),
   CONSTRAINT chk_entity_observation_binding_priority CHECK (source_priority BETWEEN 0 AND 1000),
   CONSTRAINT chk_entity_observation_binding_resolution
     CHECK (resolution_basis IN ('controller-issued-id', 'legacy-path-provisioning',
@@ -3503,6 +3505,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_entity_observation_binding_current_source
   ON public.entity_observation_binding
     (scope_key, stable_entity_id, binding_kind, topic_path, source_workload_identity_id)
   WHERE valid_to IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_entity_observation_binding_current_legacy
+  ON public.entity_observation_binding
+    (scope_key, stable_entity_id, binding_kind, topic_path)
+  WHERE valid_to IS NULL
+    AND source_authority = 'controller-legacy'
+    AND source_workload_identity_id IS NULL;
 
 CREATE OR REPLACE FUNCTION public.bump_entity_observation_binding_revision()
 RETURNS trigger
