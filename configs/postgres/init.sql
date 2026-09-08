@@ -3349,6 +3349,13 @@ CREATE TABLE IF NOT EXISTS public.entity_external_identity (
   external_id text NOT NULL,
   evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   verified_at timestamptz NULL,
+  status text NOT NULL DEFAULT 'active',
+  registration_source text NOT NULL DEFAULT 'legacy',
+  reviewed_by text NULL,
+  reviewed_at timestamptz NULL,
+  review_evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  revoked_by text NULL,
+  revoked_at timestamptz NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (scope_key, provider_id, external_system, external_type, external_id),
   FOREIGN KEY (scope_key)
@@ -3362,11 +3369,125 @@ CREATE TABLE IF NOT EXISTS public.entity_external_identity (
   CONSTRAINT chk_entity_external_identity_type
     CHECK (length(btrim(external_type)) > 0),
   CONSTRAINT chk_entity_external_identity_value
-    CHECK (length(btrim(external_id)) > 0)
+    CHECK (length(btrim(external_id)) > 0),
+  CONSTRAINT chk_entity_external_identity_status
+    CHECK (status IN ('active', 'revoked')),
+  CONSTRAINT chk_entity_external_identity_review_pair
+    CHECK ((reviewed_by IS NULL) = (reviewed_at IS NULL)),
+  CONSTRAINT chk_entity_external_identity_review_source
+    CHECK (length(btrim(registration_source)) > 0
+      AND (registration_source <> 'admin-reviewed-provider'
+        OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL))),
+  CONSTRAINT chk_entity_external_identity_revocation_state
+    CHECK ((status = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
+      OR (status = 'revoked' AND revoked_by IS NOT NULL AND revoked_at IS NOT NULL))
 );
 
 CREATE INDEX IF NOT EXISTS idx_entity_external_identity_entity
   ON public.entity_external_identity (scope_key, stable_entity_id);
+
+CREATE TABLE IF NOT EXISTS public.entity_external_identity_namespace (
+  scope_key text NOT NULL,
+  provider_id text NOT NULL,
+  external_system text NOT NULL,
+  external_type text NOT NULL,
+  status text NOT NULL DEFAULT 'active',
+  allow_auto_reconcile boolean NOT NULL DEFAULT false,
+  reviewed_by text NOT NULL,
+  reviewed_at timestamptz NOT NULL DEFAULT now(),
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope_key, provider_id, external_system, external_type),
+  FOREIGN KEY (scope_key)
+    REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_external_identity_namespace_provider
+    CHECK (provider_id ~ '^[a-z0-9]+([._-][a-z0-9]+)*$'),
+  CONSTRAINT chk_entity_external_identity_namespace_system
+    CHECK (external_system ~ '^[a-z0-9]+([._-][a-z0-9]+)*$'),
+  CONSTRAINT chk_entity_external_identity_namespace_type
+    CHECK (external_type ~ '^[a-z0-9]+([._-][a-z0-9]+)*$'),
+  CONSTRAINT chk_entity_external_identity_namespace_status
+    CHECK (status IN ('active', 'revoked')),
+  CONSTRAINT chk_entity_external_identity_namespace_actor
+    CHECK (length(btrim(reviewed_by)) > 0)
+);
+
+CREATE TABLE IF NOT EXISTS public.entity_external_identity_namespace_review (
+  review_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  provider_id text NOT NULL,
+  external_system text NOT NULL,
+  external_type text NOT NULL,
+  status text NOT NULL,
+  allow_auto_reconcile boolean NOT NULL DEFAULT false,
+  reviewed_by text NOT NULL,
+  reviewed_at timestamptz NOT NULL,
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (scope_key, provider_id, external_system, external_type)
+    REFERENCES public.entity_external_identity_namespace
+      (scope_key, provider_id, external_system, external_type) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_external_identity_namespace_review_status
+    CHECK (status IN ('active', 'revoked')),
+  CONSTRAINT chk_entity_external_identity_namespace_review_actor
+    CHECK (length(btrim(reviewed_by)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_external_identity_namespace_review_time
+  ON public.entity_external_identity_namespace_review
+    (scope_key, provider_id, reviewed_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.entity_external_identity_conflict (
+  conflict_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  provider_id text NOT NULL,
+  external_system text NOT NULL,
+  external_type text NOT NULL,
+  external_id text NOT NULL,
+  existing_external_identity_id uuid NOT NULL,
+  existing_stable_entity_id uuid NOT NULL,
+  candidate_stable_entity_id uuid NOT NULL,
+  existing_status text NOT NULL,
+  state text NOT NULL DEFAULT 'pending',
+  decision text NULL,
+  occurrence_count integer NOT NULL DEFAULT 1,
+  revision bigint NOT NULL DEFAULT 1,
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  requested_by text NOT NULL,
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  reviewed_by text NULL,
+  reviewed_at timestamptz NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, provider_id, external_system, external_type, external_id,
+          candidate_stable_entity_id),
+  FOREIGN KEY (scope_key) REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (existing_external_identity_id)
+    REFERENCES public.entity_external_identity(external_identity_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, existing_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  FOREIGN KEY (scope_key, candidate_stable_entity_id)
+    REFERENCES public.entity(scope_key, stable_entity_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_entity_external_identity_conflict_entities
+    CHECK (existing_stable_entity_id <> candidate_stable_entity_id
+      OR existing_status = 'revoked'),
+  CONSTRAINT chk_entity_external_identity_conflict_status
+    CHECK (existing_status IN ('active', 'revoked')),
+  CONSTRAINT chk_entity_external_identity_conflict_state
+    CHECK (state IN ('pending', 'resolved')),
+  CONSTRAINT chk_entity_external_identity_conflict_decision
+    CHECK ((state = 'pending' AND decision IS NULL AND reviewed_by IS NULL AND reviewed_at IS NULL)
+      OR (state = 'resolved' AND decision = 'keep-existing'
+        AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)),
+  CONSTRAINT chk_entity_external_identity_conflict_counts
+    CHECK (occurrence_count > 0 AND revision > 0),
+  CONSTRAINT chk_entity_external_identity_conflict_requester
+    CHECK (length(btrim(requested_by)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_external_identity_conflict_queue
+  ON public.entity_external_identity_conflict (scope_key, state, last_seen_at DESC);
 
 CREATE TABLE IF NOT EXISTS public.namespace_node (
   namespace_node_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
