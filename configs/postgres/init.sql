@@ -5705,6 +5705,7 @@ CREATE TABLE IF NOT EXISTS public.rtt_process_migration (
   mode text NOT NULL,
   rtt_node text NOT NULL,
   version text NOT NULL,
+  target_version text NOT NULL,
   source_controller text NOT NULL,
   source_instance_id text NOT NULL,
   target_controller text NOT NULL,
@@ -5725,7 +5726,7 @@ CREATE INDEX IF NOT EXISTS rtt_process_migration_source_active_idx
   ON public.rtt_process_migration (source_controller, rtt_node, version, source_instance_id, created_at DESC)
   WHERE state IN ('planned', 'source_stopped', 'target_starting', 'awaiting_handover', 'handover_acknowledged', 'rollback_starting', 'needs_attention');
 CREATE INDEX IF NOT EXISTS rtt_process_migration_target_active_idx
-  ON public.rtt_process_migration (target_controller, rtt_node, version, target_instance_id, created_at DESC)
+  ON public.rtt_process_migration (target_controller, rtt_node, target_version, target_instance_id, created_at DESC)
   WHERE state IN ('planned', 'source_stopped', 'target_starting', 'awaiting_handover', 'handover_acknowledged', 'rollback_starting', 'needs_attention');
 CREATE TABLE IF NOT EXISTS public.rtt_process_migration_event (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
