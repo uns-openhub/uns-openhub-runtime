@@ -3438,6 +3438,53 @@ CREATE INDEX IF NOT EXISTS idx_entity_external_identity_namespace_review_time
   ON public.entity_external_identity_namespace_review
     (scope_key, provider_id, reviewed_at DESC);
 
+CREATE TABLE IF NOT EXISTS public.asset_identity_provider_candidate_evidence (
+  evidence_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope_key text NOT NULL,
+  uns_object_id integer NOT NULL,
+  source_workload_identity_id uuid NULL,
+  provider_id text NOT NULL,
+  external_system text NOT NULL,
+  external_type text NOT NULL,
+  external_id text NOT NULL,
+  candidate_asset_path text NOT NULL,
+  source_event_at timestamptz NULL,
+  first_observed_at timestamptz NOT NULL DEFAULT now(),
+  last_observed_at timestamptz NOT NULL DEFAULT now(),
+  occurrence_count integer NOT NULL DEFAULT 1,
+  evidence_digest text NOT NULL,
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scope_key, uns_object_id, provider_id, external_system, external_type,
+          external_id, source_workload_identity_id),
+  FOREIGN KEY (scope_key) REFERENCES public.platform_tenant(scope_key) ON DELETE RESTRICT,
+  FOREIGN KEY (uns_object_id) REFERENCES public.uns_object(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_workload_identity_id)
+    REFERENCES public.auth_workload_identities(id) ON DELETE SET NULL,
+  FOREIGN KEY (scope_key, provider_id, external_system, external_type)
+    REFERENCES public.entity_external_identity_namespace
+      (scope_key, provider_id, external_system, external_type) ON DELETE RESTRICT,
+  CONSTRAINT chk_asset_identity_provider_candidate_path
+    CHECK (length(btrim(candidate_asset_path)) > 0
+      AND candidate_asset_path = btrim(candidate_asset_path)
+      AND candidate_asset_path !~ '(^/|/$|//|[+#])'),
+  CONSTRAINT chk_asset_identity_provider_candidate_external_id
+    CHECK (length(btrim(external_id)) > 0),
+  CONSTRAINT chk_asset_identity_provider_candidate_count
+    CHECK (occurrence_count > 0),
+  CONSTRAINT chk_asset_identity_provider_candidate_digest
+    CHECK (evidence_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_identity_provider_candidate_pair
+  ON public.asset_identity_provider_candidate_evidence
+    (scope_key, provider_id, external_system, external_type, external_id, last_observed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_asset_identity_provider_candidate_workload
+  ON public.asset_identity_provider_candidate_evidence
+    (source_workload_identity_id, last_observed_at DESC);
+
 CREATE TABLE IF NOT EXISTS public.entity_external_identity_conflict (
   conflict_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   scope_key text NOT NULL,
