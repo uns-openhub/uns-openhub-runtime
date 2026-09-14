@@ -1,6 +1,7 @@
 .env
 .cache/
 .release/
+/backups
 configs/uns-openhub-controller/config*.json
 !configs/uns-openhub-controller/config-example.json
 !configs/uns-openhub-controller/config-infisical-example.json

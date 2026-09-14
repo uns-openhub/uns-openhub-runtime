@@ -61,6 +61,16 @@ instead:
   --dir "$PWD/uns-openhub-runtime"
 ```
 
+Bootstrap keeps control-plane backup data outside the replaceable Runtime at
+`<runtime-directory>-data/backups`. On Unix it also exposes that storage through
+the `backups` link inside the Runtime directory. On Windows, Compose uses the
+absolute `UNS_BACKUP_DIR` value written by Bootstrap, so no privileged symbolic
+link is required. The controller mounts the selected host path at
+`/var/lib/uns-backups`. Runtime upgrades and retained rollback installations
+therefore reference the same archives without copying them. Backup content is
+operator-owned local state and is never included in Git or Runtime release
+archives.
+
 Windows PowerShell:
 
 ```powershell
@@ -171,7 +181,12 @@ configs/uns-openhub-controller/config-example.json
 ```
 
 If you create another config file, set `CONFIG_FILE` in `.env` to that file
-name.
+name. The selected file is the single persistent controller configuration
+authority: controller reads and UI edits update this host-visible file directly.
+Runtime refresh preserves a locally changed selected example or custom config.
+Setup completion metadata remains in the persistent controller state volume and
+is reconstructed from the database, configuration and signing identity when
+needed.
 
 The example configuration includes signed public UNS OpenHub package discovery.
 It needs no GitHub token or GitHub API access. The controller verifies the

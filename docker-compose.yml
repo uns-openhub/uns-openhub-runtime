@@ -72,16 +72,20 @@ services:
     environment:
       CONFIG_FILE: ${CONFIG_FILE:-config-example.json}
       CONFIG_OVERRIDES_DIR: /usr/src/app/config-overrides
+      UNS_CONFIG_PATH: /usr/src/app/config-overrides/${CONFIG_FILE:-config-example.json}
+      UNS_SETUP_STATE_PATH: /usr/src/app/controller-override/setup-state.json
       CONFIG_DIR: ${CONFIG_DIR:-./config}
       CRYPTO_DIR: "/usr/src/app/crypto"
+      UNS_BACKUP_ROOT: "/var/lib/uns-backups"
       NODE_ENV: "production"
     ports:
       - "3200:3200"
     volumes:
-      - ./configs/uns-openhub-controller:/usr/src/app/config-overrides:ro${BIND_MOUNT_LABEL:-}
+      - ./configs/uns-openhub-controller:/usr/src/app/config-overrides:rw${BIND_MOUNT_LABEL:-}
       - ./.secrets:/run/secrets:ro${BIND_MOUNT_LABEL:-}
       - uns_crypto:/usr/src/app/crypto
       - controller_code:/usr/src/app/controller-override
+      - ${UNS_BACKUP_DIR:-./backups}:/var/lib/uns-backups:rw${BIND_MOUNT_LABEL:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget -qO- http://127.0.0.1:3200/api/healthcheck >/dev/null 2>&1 || exit 1"]
@@ -98,14 +102,6 @@ services:
         condition: service_healthy
     networks:
       - uns-openhub
-
-secrets:
-  infisical_token:
-    file: .secrets/infisical_token
-  infisical_project_id:
-    file: .secrets/infisical_project_id
-  infisical_site_url:
-    file: .secrets/infisical_site_url
 
 volumes:
   pgdata: {}

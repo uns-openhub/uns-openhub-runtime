@@ -5818,3 +5818,47 @@ CREATE TABLE IF NOT EXISTS public.controller_runtime_update_event (
 );
 CREATE INDEX IF NOT EXISTS controller_runtime_update_event_update_idx
   ON public.controller_runtime_update_event (update_id, id);
+
+-- === DURABLE RECOVERY BACKUP JOBS ========================================
+CREATE TABLE IF NOT EXISTS public.recovery_backup_job (
+  id uuid PRIMARY KEY,
+  state text NOT NULL,
+  database_key text NOT NULL,
+  executor_controller text NOT NULL,
+  requested_by text NOT NULL,
+  artifact_id text,
+  format_version integer,
+  manifest_sha256 text,
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  CONSTRAINT recovery_backup_job_state_chk CHECK (state IN ('accepted', 'running', 'completed', 'failed')),
+  CONSTRAINT recovery_backup_job_database_key_chk CHECK (database_key ~ '^[a-f0-9]{64}$'),
+  CONSTRAINT recovery_backup_job_artifact_id_chk CHECK (artifact_id IS NULL OR artifact_id ~ '^(environment-backup|recovery-point)-[A-Za-z0-9._-]{1,128}$'),
+  CONSTRAINT recovery_backup_job_format_version_chk CHECK (format_version IS NULL OR format_version = 1),
+  CONSTRAINT recovery_backup_job_manifest_sha256_chk CHECK (manifest_sha256 IS NULL OR manifest_sha256 ~ '^[a-f0-9]{64}$'),
+  CONSTRAINT recovery_backup_job_detail_chk CHECK (jsonb_typeof(detail) = 'object'),
+  CONSTRAINT recovery_backup_job_completed_evidence_chk CHECK (
+    state <> 'completed' OR
+    (artifact_id IS NOT NULL AND format_version IS NOT NULL AND manifest_sha256 IS NOT NULL AND completed_at IS NOT NULL)
+  )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS recovery_backup_job_active_database_idx
+  ON public.recovery_backup_job (database_key)
+  WHERE state IN ('accepted', 'running');
+CREATE INDEX IF NOT EXISTS recovery_backup_job_recent_idx
+  ON public.recovery_backup_job (updated_at DESC);
+CREATE TABLE IF NOT EXISTS public.recovery_backup_job_event (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  job_id uuid NOT NULL REFERENCES public.recovery_backup_job(id) ON DELETE CASCADE,
+  state text NOT NULL,
+  actor text NOT NULL,
+  message text NOT NULL,
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT recovery_backup_job_event_state_chk CHECK (state IN ('accepted', 'running', 'completed', 'failed')),
+  CONSTRAINT recovery_backup_job_event_detail_chk CHECK (jsonb_typeof(detail) = 'object')
+);
+CREATE INDEX IF NOT EXISTS recovery_backup_job_event_job_idx
+  ON public.recovery_backup_job_event (job_id, id);
