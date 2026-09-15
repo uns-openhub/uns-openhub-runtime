@@ -71,6 +71,27 @@ therefore reference the same archives without copying them. Backup content is
 operator-owned local state and is never included in Git or Runtime release
 archives.
 
+Runtime releases install the matching checksummed backup helper under
+`runtime-tools/uns-backup-helper`. Compose mounts that directory read-only into
+the controller. Bootstrap installs it automatically; to verify or repair the
+installed copy without changing the controller image, run:
+
+```sh
+./bin/uns runtime backup-helper install
+```
+
+The controller detects an atomically replaced helper on the next Recovery
+request. Older Runtime distributions continue to use the helper embedded in
+their controller image.
+
+To align an already-running controller installed before the helper mount was
+added, use the explicit persistent-volume migration without recreating its
+container:
+
+```sh
+./bin/uns runtime backup-helper install --version <release> --activate-running
+```
+
 Windows PowerShell:
 
 ```powershell

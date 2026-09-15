@@ -3,9 +3,9 @@ set -eu
 
 tool="${1:-}"
 case "$tool" in
-  uns|infisical-rotator) ;;
+  uns|uns-backup-helper|infisical-rotator) ;;
   *)
-    echo "Usage: runtime-download <uns|infisical-rotator>" >&2
+    echo "Usage: runtime-download <uns|uns-backup-helper|infisical-rotator>" >&2
     exit 2
     ;;
 esac

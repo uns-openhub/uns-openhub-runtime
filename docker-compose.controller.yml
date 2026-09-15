@@ -20,6 +20,7 @@ services:
       - ./.secrets:/run/secrets:ro${BIND_MOUNT_LABEL:-}
       - uns_crypto:/usr/src/app/crypto
       - controller_code:/usr/src/app/controller-override
+      - ./runtime-tools:/opt/uns-runtime-tools:ro${BIND_MOUNT_LABEL:-}
       - ${UNS_BACKUP_DIR:-./backups}:/var/lib/uns-backups:rw${BIND_MOUNT_LABEL:-}
     restart: unless-stopped
     healthcheck:

@@ -7,11 +7,15 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 Environment=UNS_CONTROLLER_REPOSITORY=uns-openhub-controller
+Environment=UNS_RUNTIME_TOOLS_DIR=/var/lib/uns/runtime-tools
 EnvironmentFile=/etc/uns/controller.env
 ExecStart=/usr/bin/podman run --replace --name uns-controller --detach \
   -p 3200:3200 \
   -v /etc/uns/configs/uns-openhub-controller:/usr/src/app/config-overrides:ro \
   -v uns_crypto:/usr/src/app/crypto \
+  -v ${UNS_RUNTIME_TOOLS_DIR}:/opt/uns-runtime-tools:ro,Z \
+  -v /var/lib/uns/backups:/var/lib/uns-backups:rw,Z \
+  -e UNS_BACKUP_ROOT=/var/lib/uns-backups \
   --secret infisical_token,type=mount \
   --secret infisical_project_id,type=mount \
   --secret infisical_site_url,type=mount \

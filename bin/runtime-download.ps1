@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet("uns", "infisical-rotator")]
+  [ValidateSet("uns", "uns-backup-helper", "infisical-rotator")]
   [string]$Tool
 )
 

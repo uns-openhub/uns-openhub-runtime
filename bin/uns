@@ -5,5 +5,6 @@ case "$0" in
   */*) bin_dir=${0%/*} ;;
   *) bin_dir=. ;;
 esac
+runtime_dir=$(CDPATH= cd -- "$bin_dir/.." && pwd -P)
 exe=$("$bin_dir/runtime-download" uns)
-exec "$exe" "$@"
+UNS_RUNTIME_ROOT="$runtime_dir" exec "$exe" "$@"

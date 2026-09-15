@@ -97,6 +97,8 @@ grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsopenhub}/${UNS_
   docker-compose.controller.yml docker-compose.yml
 grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsopenhub}/${UNS_POSTGRES_REPOSITORY:-uns-postgres}:${UNS_TAG:-latest}' \
   docker-compose.infra.yml docker-compose.yml
+grep -F './runtime-tools:/opt/uns-runtime-tools:ro${BIND_MOUNT_LABEL:-}' \
+  docker-compose.controller.yml docker-compose.yml
 
 if grep -R -E 'fra\.ocir\.io|fricdwfcid28' \
   -- .env.example docker-compose.controller.yml docker-compose.infra.yml docker-compose.yml; then
@@ -106,6 +108,7 @@ fi
 
 bash -n \
   bin/uns \
+  bin/uns-backup-helper \
   bin/infisical-rotator \
   bin/runtime-download \
   scripts/check-release-version.sh \
@@ -113,9 +116,11 @@ bash -n \
 
 for file in \
   bin/uns \
+  bin/uns-backup-helper \
   bin/infisical-rotator \
   bin/runtime-download \
   bin/uns.cmd \
+  bin/uns-backup-helper.cmd \
   bin/infisical-rotator.cmd \
   bin/runtime-download.ps1; do
   [[ -s "$file" ]] || {
@@ -137,6 +142,8 @@ done
 
 if find bin -maxdepth 1 -type f \
   \( -name 'uns-*-amd64*' -o -name 'uns-*-arm64*' \
+     -o -name 'uns-backup-helper-*-amd64*' \
+     -o -name 'uns-backup-helper-*-arm64*' \
      -o -name 'infisical-rotator-*-amd64*' \
      -o -name 'infisical-rotator-*-arm64*' \) -print -quit |
   grep -q .; then

@@ -2,6 +2,8 @@
 .cache/
 .release/
 /backups
+/runtime-tools/*
+!/runtime-tools/.gitkeep
 configs/uns-openhub-controller/config*.json
 !configs/uns-openhub-controller/config-example.json
 !configs/uns-openhub-controller/config-infisical-example.json
