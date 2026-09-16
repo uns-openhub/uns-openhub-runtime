@@ -5835,7 +5835,7 @@ CREATE TABLE IF NOT EXISTS public.recovery_backup_job (
   completed_at timestamptz,
   CONSTRAINT recovery_backup_job_state_chk CHECK (state IN ('accepted', 'running', 'completed', 'failed')),
   CONSTRAINT recovery_backup_job_database_key_chk CHECK (database_key ~ '^[a-f0-9]{64}$'),
-  CONSTRAINT recovery_backup_job_artifact_id_chk CHECK (artifact_id IS NULL OR artifact_id ~ '^(environment-backup|recovery-point)-[A-Za-z0-9._-]{1,128}$'),
+  CONSTRAINT recovery_backup_job_artifact_id_chk CHECK (artifact_id IS NULL OR artifact_id ~ '^(environment-backup|recovery-point|cluster-recovery-set)-[A-Za-z0-9._-]{1,128}$'),
   CONSTRAINT recovery_backup_job_format_version_chk CHECK (format_version IS NULL OR format_version = 1),
   CONSTRAINT recovery_backup_job_manifest_sha256_chk CHECK (manifest_sha256 IS NULL OR manifest_sha256 ~ '^[a-f0-9]{64}$'),
   CONSTRAINT recovery_backup_job_detail_chk CHECK (jsonb_typeof(detail) = 'object'),
