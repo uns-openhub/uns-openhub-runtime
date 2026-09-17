@@ -12,6 +12,7 @@ services:
       CONFIG_DIR: ${CONFIG_DIR:-./config}
       CRYPTO_DIR: "/usr/src/app/crypto"
       UNS_BACKUP_ROOT: "/var/lib/uns-backups"
+      UNS_EXTERNAL_RECOVERY_ROOT: "/var/lib/uns-external-recovery"
       NODE_ENV: "production"
     ports:
       - "3200:3200"
@@ -22,6 +23,7 @@ services:
       - controller_code:/usr/src/app/controller-override
       - ./runtime-tools:/opt/uns-runtime-tools:ro${BIND_MOUNT_LABEL:-}
       - ${UNS_BACKUP_DIR:-./backups}:/var/lib/uns-backups:rw${BIND_MOUNT_LABEL:-}
+      - ${UNS_EXTERNAL_RECOVERY_DIR:-./external-recovery}:/var/lib/uns-external-recovery:ro${BIND_MOUNT_LABEL:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget -qO- http://127.0.0.1:3200/api/healthcheck >/dev/null 2>&1 || exit 1"]

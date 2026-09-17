@@ -5862,3 +5862,54 @@ CREATE TABLE IF NOT EXISTS public.recovery_backup_job_event (
 );
 CREATE INDEX IF NOT EXISTS recovery_backup_job_event_job_idx
   ON public.recovery_backup_job_event (job_id, id);
+CREATE TABLE IF NOT EXISTS public.recovery_backup_job_review (
+  job_id uuid PRIMARY KEY REFERENCES public.recovery_backup_job(id) ON DELETE RESTRICT,
+  hidden boolean NOT NULL DEFAULT false,
+  reviewed_at timestamptz,
+  reviewed_by text,
+  review_note text,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT recovery_backup_job_review_reviewed_fields_chk CHECK (
+    (reviewed_at IS NULL AND reviewed_by IS NULL AND review_note IS NULL) OR
+    (reviewed_at IS NOT NULL AND reviewed_by IS NOT NULL)
+  ),
+  CONSTRAINT recovery_backup_job_review_note_length_chk CHECK (
+    review_note IS NULL OR char_length(review_note) <= 1000
+  )
+);
+CREATE TABLE IF NOT EXISTS public.recovery_backup_job_review_audit (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  job_id uuid NOT NULL,
+  action text NOT NULL,
+  actor text NOT NULL,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT recovery_backup_job_review_audit_action_chk CHECK (action IN ('reviewed', 'unreviewed', 'hidden', 'unhidden')),
+  CONSTRAINT recovery_backup_job_review_audit_note_length_chk CHECK (note IS NULL OR char_length(note) <= 1000)
+);
+CREATE INDEX IF NOT EXISTS recovery_backup_job_review_audit_job_idx
+  ON public.recovery_backup_job_review_audit (job_id, id);
+-- Permanent activity cleanup retains only minimal provenance. It has no
+-- foreign key because the detailed recovery job, events and review notes are
+-- deliberately removed after a reviewed per-record operation.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_job_tombstone (
+  job_id uuid PRIMARY KEY,
+  state text NOT NULL,
+  executor_controller text NOT NULL,
+  artifact_id text,
+  format_version integer,
+  manifest_sha256 text,
+  original_created_at timestamptz NOT NULL,
+  original_updated_at timestamptz NOT NULL,
+  original_completed_at timestamptz,
+  event_count integer NOT NULL,
+  deleted_at timestamptz NOT NULL DEFAULT now(),
+  deleted_by text NOT NULL,
+  preflight_digest text NOT NULL,
+  CONSTRAINT recovery_backup_job_tombstone_state_chk CHECK (state IN ('completed', 'failed')),
+  CONSTRAINT recovery_backup_job_tombstone_event_count_chk CHECK (event_count >= 0),
+  CONSTRAINT recovery_backup_job_tombstone_deleted_by_chk CHECK (length(btrim(deleted_by)) > 0),
+  CONSTRAINT recovery_backup_job_tombstone_preflight_digest_chk CHECK (preflight_digest ~ '^sha256:[a-f0-9]{64}$')
+);
+CREATE INDEX IF NOT EXISTS recovery_backup_job_tombstone_deleted_at_idx
+  ON public.recovery_backup_job_tombstone (deleted_at DESC);
