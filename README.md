@@ -1,8 +1,8 @@
 # UNS OpenHub Controller Bundle (Registry)
 
-> **Private initial release.** This generated repository is currently private.
-> It may be made public later, but public visibility does not change the
-> proprietary license or expose the private `uns-openhub-tools` source.
+> **Public Runtime distribution.** This generated repository and its immutable
+> GitHub Release assets are public. The `uns-datahub-tools` release factory
+> remains private.
 
 This bundle runs the UNS OpenHub Controller from registry images. It supports
 three common cases:
@@ -20,9 +20,8 @@ configured in `.env`. The examples use `docker compose`; with Podman use
 ### Fresh install without Git or GitHub CLI
 
 The public `uns-openhub-bootstrap` release contains only a minimal Go
-downloader and installers. This runtime repository and its release assets may
-remain private. macOS and Linux users start without Git, GitHub CLI, Node,
-Python, or `jq`:
+downloader and installers. macOS and Linux users start without Git, GitHub CLI,
+Node, Python, or `jq`:
 
 ```sh
 curl -fsSL \
@@ -34,16 +33,16 @@ curl -fsSL \
 
 The installer verifies and installs `uns-bootstrap` under `~/.local/bin`.
 Bootstrap releases use their own semantic version and embed the default
-runtime version they install. It first tries that runtime release anonymously.
-If the runtime is
-private, it asks for a GitHub token using a hidden prompt and uses it only for
+runtime version they install and download that public Runtime release
+anonymously. If an operator deliberately configures a private Runtime mirror,
+Bootstrap asks for a GitHub token using a hidden prompt and uses it only for
 the release API requests; the token is not stored. Use a fine-grained,
-expiring token limited to `uns-openhub-runtime` with read-only Contents
+expiring token limited to that private repository with read-only Contents
 permission.
 
 The bootstrap verifies the immutable offline runtime bundle, refuses an
 unknown or non-matching non-empty destination, extracts it without links or
-path traversal, verifies the matching private `uns` CLI, and starts that CLI's
+path traversal, verifies the matching versioned `uns` CLI, and starts that CLI's
 init wizard. Re-running it for the same verified runtime safely reuses the
 installation and resumes the wizard. If the destination contains a different
 or unverifiable runtime, the error reports the found and requested versions
@@ -116,9 +115,9 @@ independent version boundary: read `release/manifest.json` → `imageTag` and th
 effective `UNS_TAG`. Use
 `uns-bootstrap install --version <runtime-version>` for an immutable older
 runtime or `uns-bootstrap install --offline <bundle.tar.gz>` with its sibling
-`.sha256` file for an offline installation. For unattended private downloads,
-provide `UNS_GITHUB_TOKEN` through the host's secret mechanism rather than a
-command-line argument.
+`.sha256` file for an offline installation. For unattended downloads from a
+private Runtime mirror, provide `UNS_GITHUB_TOKEN` through the host's secret
+mechanism rather than a command-line argument.
 
 ### Existing runtime checkout
 
@@ -126,8 +125,9 @@ Run the commands from the runtime bundle directory. Use `./bin/uns` on
 macOS/Linux or `.\bin\uns.cmd` in Windows PowerShell. The small launcher
 selects the current platform and verifies a versioned CLI asset before running
 it. A generated/offline bundle uses its local `.release` assets; a Git checkout
-downloads the asset on first use. Public releases need no credential. A private
-release prompts for a read-only GitHub token without displaying or storing it.
+downloads the asset on first use. The public Runtime needs no credential. A
+private mirror prompts for a read-only GitHub token without displaying or
+storing it.
 
 Recommended setup:
 
@@ -162,8 +162,10 @@ UNS_TAG=<controller/Postgres image version>
 CONFIG_FILE=config-example.json
 ```
 
-The controller image is private during the Runtime preview. Authenticate the
-container engine before starting a mode that includes the controller:
+The default controller and PostgreSQL images are public. No registry login is
+needed for the defaults. If you change `UNS_REGISTRY` or the repository names
+to a restricted registry, authenticate the selected container engine before
+starting a mode that includes the controller:
 
 ```sh
 docker login docker.io
@@ -171,10 +173,10 @@ docker login docker.io
 podman login docker.io
 ```
 
-Use your Docker Hub username and an access token. The container engine stores
-the credential in its own credential store; do not put it in `.env`. Docker
-Hub image access is separate from the GitHub token used to download the
-private Runtime.
+Use the registry identity and access token required by that registry. The
+container engine stores the credential in its own credential store; do not put
+it in `.env`. Registry authentication is separate from any GitHub token used
+for a private Runtime mirror.
 
 These defaults resolve to:
 
@@ -183,8 +185,7 @@ docker.io/unsopenhub/uns-openhub-controller:<version-or-latest>
 docker.io/unsopenhub/uns-postgres:<version-or-latest>
 ```
 
-`uns-postgres` remains public and does not require registry authentication. If
-an existing `.env` still has `UNS_IMAGE_REPOSITORY`, replace it with
+If an existing `.env` still has `UNS_IMAGE_REPOSITORY`, replace it with
 `UNS_CONTROLLER_REPOSITORY` and `UNS_POSTGRES_REPOSITORY` as shown above. The
 Compose files retain safe defaults so regeneration does not overwrite the
 preserved `.env`.
@@ -347,7 +348,7 @@ Reconfigure the runtime:
 ./bin/uns init -i
 ```
 
-Install a verified private runtime without Git from the public bootstrap:
+Install a verified Runtime without Git from the public bootstrap:
 
 ```sh
 uns-bootstrap install --dir "$HOME/uns-openhub-runtime"
