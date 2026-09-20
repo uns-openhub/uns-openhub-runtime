@@ -129,6 +129,31 @@ for file in \
   }
 done
 
+[[ -s docs/controller-only-host-reconciliation.md ]] || {
+  echo "Missing controller-only host reconciliation runbook" >&2
+  exit 1
+}
+grep -F 'PRIVATE_CLUSTER_CONFIG_KEY' \
+  docs/controller-only-host-reconciliation.md >/dev/null || {
+  echo "Controller reconciliation runbook is missing the dedicated cluster signer boundary" >&2
+  exit 1
+}
+grep -F 'runtime start --mode controller --engine podman' \
+  docs/controller-only-host-reconciliation.md >/dev/null || {
+  echo "Controller reconciliation runbook is missing the controller-only lifecycle command" >&2
+  exit 1
+}
+grep -F 'RTT inventory acceptance' \
+  docs/controller-only-host-reconciliation.md >/dev/null || {
+  echo "Controller reconciliation runbook is missing the RTT inventory acceptance gate" >&2
+  exit 1
+}
+grep -F 'environment backup rtt-verify' \
+  docs/controller-only-host-reconciliation.md >/dev/null || {
+  echo "Controller reconciliation runbook is missing verified RTT backup recovery" >&2
+  exit 1
+}
+
 for expected in \
   'PROCESSOR_ARCHITEW6432' \
   'PROCESSOR_ARCHITECTURE' \

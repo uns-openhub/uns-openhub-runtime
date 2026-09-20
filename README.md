@@ -60,6 +60,12 @@ instead:
   --dir "$PWD/uns-openhub-runtime"
 ```
 
+For an existing host with an ad-hoc container or an older Runtime checkout,
+follow [Controller-only host reconciliation](docs/controller-only-host-reconciliation.md).
+It preserves node identity and rotator bootstrap state, validates shared
+cluster trust, and keeps a tested rollback while one cluster member is changed
+at a time.
+
 Bootstrap keeps control-plane backup data outside the replaceable Runtime at
 `<runtime-directory>-data/backups`. On Unix it also exposes that storage through
 the `backups` link inside the Runtime directory. On Windows, Compose uses the
