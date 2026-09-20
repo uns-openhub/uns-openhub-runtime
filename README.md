@@ -76,6 +76,13 @@ therefore reference the same archives without copying them. Backup content is
 operator-owned local state and is never included in Git or Runtime release
 archives.
 
+Before selecting backup paths or schedules, follow the general
+[Data protection and recovery policy](docs/data-protection-and-recovery-policy.md).
+It separates control-plane recovery, service deployments, business databases,
+service identities and offline recovery keys, and provides the template for an
+environment-specific runbook. Keep recovery decryption material under the
+separate [Recovery key custody](docs/recovery-key-custody.md) procedure.
+
 Runtime releases install the matching checksummed backup helper under
 `runtime-tools/uns-backup-helper`. Compose mounts that directory read-only into
 the controller. Bootstrap installs it automatically; to verify or repair the

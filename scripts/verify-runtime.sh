@@ -133,6 +133,19 @@ done
   echo "Missing controller-only host reconciliation runbook" >&2
   exit 1
 }
+[[ -s docs/data-protection-and-recovery-policy.md ]] || {
+  echo "Missing data protection and recovery policy" >&2
+  exit 1
+}
+grep -F '## Environment runbook template' \
+  docs/data-protection-and-recovery-policy.md >/dev/null || {
+  echo "Data protection policy is missing the environment runbook boundary" >&2
+  exit 1
+}
+[[ -s docs/recovery-key-custody.md ]] || {
+  echo "Missing recovery key custody guide" >&2
+  exit 1
+}
 grep -F 'PRIVATE_CLUSTER_CONFIG_KEY' \
   docs/controller-only-host-reconciliation.md >/dev/null || {
   echo "Controller reconciliation runbook is missing the dedicated cluster signer boundary" >&2
