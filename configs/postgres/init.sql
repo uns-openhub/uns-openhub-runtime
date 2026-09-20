@@ -5764,7 +5764,7 @@ CREATE TABLE IF NOT EXISTS public.rtt_process_migration (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz,
-  CONSTRAINT rtt_process_migration_state_chk CHECK (state IN ('planned', 'source_stopped', 'target_starting', 'awaiting_handover', 'handover_acknowledged', 'completed', 'rollback_starting', 'rolled_back', 'failed', 'needs_attention')),
+  CONSTRAINT rtt_process_migration_state_chk CHECK (state IN ('planned', 'source_stopped', 'target_starting', 'awaiting_handover', 'handover_acknowledged', 'completed', 'rollback_starting', 'rolled_back', 'failed', 'resolved', 'needs_attention')),
   CONSTRAINT rtt_process_migration_mode_chk CHECK (mode IN ('safe_cold', 'hot')),
   CONSTRAINT rtt_process_migration_checksum_chk CHECK (configuration_checksum ~ '^[0-9a-f]{64}$'),
   CONSTRAINT rtt_process_migration_detail_chk CHECK (jsonb_typeof(detail) = 'object')
