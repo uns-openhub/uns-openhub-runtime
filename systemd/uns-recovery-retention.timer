@@ -1,0 +1,12 @@
+[Unit]
+Description=Plan or apply UNS OpenHub recovery retention daily
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+RandomizedDelaySec=15m
+AccuracySec=1m
+Unit=uns-recovery-retention.service
+
+[Install]
+WantedBy=timers.target

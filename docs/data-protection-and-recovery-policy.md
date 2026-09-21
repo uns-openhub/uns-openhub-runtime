@@ -168,6 +168,44 @@ audit record containing the artifact identifier, public checksum, retention
 rule, time and approving identity. The audit record must not contain decrypted
 payloads or private key material.
 
+The Runtime CLI implements this as a two-step local operation for IBM Storage
+Protect deployments. The first command is read-only and writes an exact plan:
+
+For first installation, schedule design, doctor checks and the guarded systemd
+timer, follow [Backup and retention quick start](backup-quick-start.md).
+
+```sh
+./bin/uns environment backup retention-plan \
+  --root ./backups \
+  --minimum-age-days 30 \
+  --keep-latest 3 \
+  --dsmc /opt/tivoli/tsm/client/ba/bin/dsmc \
+  --output ./retention-plan.json
+```
+
+Only normal Runtime recovery artifact directories ending in the same recovery
+job UUID are grouped. Legacy, pre-upgrade and unrecognized directories remain
+outside the selection. Every regular file in a candidate group must have an
+active TSM copy whose exact byte size and modification time match the local
+file. The command enforces a minimum of 30 local days and protects the newest
+configured number of job groups.
+
+After review, apply the unchanged plan with its printed confirmation:
+
+```sh
+./bin/uns environment backup retention-apply \
+  --plan ./retention-plan.json \
+  --confirm-plan-sha256 sha256:<exact-plan-hash> \
+  --dsmc /opt/tivoli/tsm/client/ba/bin/dsmc
+```
+
+Apply rechecks the complete local selection and every TSM copy before it stages
+whole artifact directories for removal. It records a private audit under
+`backups/.retention-audit/`. Schedule automatic deletion only after this manual
+plan/apply flow has been observed through at least one complete retention
+window. A TSM schedule creates the external file copy; it does not create the
+application-consistent controller recovery point that must run first.
+
 ## Restore validation
 
 Perform a representative restore rehearsal at least twice per year and after a

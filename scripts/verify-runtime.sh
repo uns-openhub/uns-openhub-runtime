@@ -137,6 +137,26 @@ done
   echo "Missing data protection and recovery policy" >&2
   exit 1
 }
+[[ -s docs/backup-quick-start.md ]] || {
+  echo "Missing backup and retention quick start" >&2
+  exit 1
+}
+[[ -s systemd/uns-recovery-retention.service ]] || {
+  echo "Missing recovery retention systemd service" >&2
+  exit 1
+}
+[[ -s systemd/uns-recovery-retention.timer ]] || {
+  echo "Missing recovery retention systemd timer" >&2
+  exit 1
+}
+[[ -s recovery-retention.env.example ]] || {
+  echo "Missing recovery retention environment example" >&2
+  exit 1
+}
+[[ -x scripts/install-recovery-retention-systemd.sh ]] || {
+  echo "Missing executable recovery retention installer" >&2
+  exit 1
+}
 grep -F '## Environment runbook template' \
   docs/data-protection-and-recovery-policy.md >/dev/null || {
   echo "Data protection policy is missing the environment runbook boundary" >&2

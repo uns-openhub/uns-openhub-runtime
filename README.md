@@ -82,6 +82,8 @@ It separates control-plane recovery, service deployments, business databases,
 service identities and offline recovery keys, and provides the template for an
 environment-specific runbook. Keep recovery decryption material under the
 separate [Recovery key custody](docs/recovery-key-custody.md) procedure.
+For the first end-to-end setup, use the offline
+[Backup and retention quick start](docs/backup-quick-start.md).
 
 Runtime releases install the matching checksummed backup helper under
 `runtime-tools/uns-backup-helper`. Compose mounts that directory read-only into
