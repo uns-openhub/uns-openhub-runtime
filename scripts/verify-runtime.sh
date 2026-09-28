@@ -93,6 +93,8 @@ grep -Fx 'UNS_REPO_PREFIX=unsopenhub' .env.example
 grep -Fx 'UNS_CONTROLLER_REPOSITORY=uns-openhub-controller' .env.example
 grep -Fx 'UNS_POSTGRES_REPOSITORY=uns-postgres' .env.example
 grep -Fx "UNS_TAG=$image_tag" .env.example
+grep -Fx 'UNS_TOPOLOGY=single' .env.example
+grep -Fx 'UNS_CONTROLLER_COUNT=1' .env.example
 grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsopenhub}/${UNS_CONTROLLER_REPOSITORY:-uns-openhub-controller}:${UNS_TAG:-latest}' \
   docker-compose.controller.yml docker-compose.yml
 grep -F 'image: ${UNS_REGISTRY:-docker.io}/${UNS_REPO_PREFIX:-unsopenhub}/${UNS_POSTGRES_REPOSITORY:-uns-postgres}:${UNS_TAG:-latest}' \
@@ -174,6 +176,14 @@ grep -F 'PRIVATE_CLUSTER_CONFIG_KEY' \
 grep -F 'runtime start --mode controller --engine podman' \
   docs/controller-only-host-reconciliation.md >/dev/null || {
   echo "Controller reconciliation runbook is missing the controller-only lifecycle command" >&2
+  exit 1
+}
+grep -F 'init --mode both --topology cluster --controllers 2' README.md >/dev/null || {
+  echo "Runtime README is missing the local cluster initialization command" >&2
+  exit 1
+}
+grep -F 'runtime stop --topology cluster --mode controller --engine podman' README.md >/dev/null || {
+  echo "Runtime README is missing the source-development cluster handoff command" >&2
   exit 1
 }
 grep -F 'RTT inventory acceptance' \

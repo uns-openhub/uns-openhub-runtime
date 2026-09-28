@@ -158,6 +158,34 @@ was generated; an existing `.env` or explicit `UNS_TAG` override is preserved.
 Passwords and access tokens requested by the wizard use hidden terminal input;
 existing values can be kept without displaying them.
 
+For a local cluster with shared infrastructure and two isolated controllers:
+
+```sh
+./bin/uns init --mode both --topology cluster --controllers 2 --secrets env --engine podman --yes
+./bin/uns runtime start --topology cluster --engine podman
+```
+
+The initializer writes `docker-compose.cluster.yml` and one controller config
+per instance under `configs/uns-openhub-controller/`. Controllers share
+Postgres, Mosquitto, QuestDB, Caddy, and the `uns-openhub` network, while each
+controller keeps its own crypto identity, setup state, backup directory, and
+host port (`3201`, `3202`, ...). Caddy remains the public entrypoint on `8180`.
+The selected topology and controller count are stored in `.env`, so later
+`runtime start`, `status`, `logs`, and `stop` commands can omit `--topology`.
+
+For controller source development, keep that shared infrastructure running and
+stop only the generated controller services:
+
+```sh
+./bin/uns runtime stop --topology cluster --mode controller --engine podman
+```
+
+The same command with `start`, `status`, or `logs` targets only
+`controller-1`, `controller-2`, and any additional generated controller
+services. It leaves Postgres, Mosquitto, QuestDB, and Caddy running, so source
+controllers can use the same names, public ports, cluster settings, and Caddy
+entrypoint as the containerized topology.
+
 Manual setup:
 
 1. Copy the environment template:
@@ -347,6 +375,10 @@ Infisical.
 ./bin/uns runtime logs --mode controller
 ./bin/uns runtime stop --mode controller
 ```
+
+With `--topology cluster`, controller-only lifecycle commands select every
+generated `controller-N` service while leaving the shared infrastructure
+running.
 
 `logs` also accepts one or more service names, for example:
 

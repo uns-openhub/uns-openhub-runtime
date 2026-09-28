@@ -86,6 +86,7 @@ services:
       - ./.secrets:/run/secrets:ro${BIND_MOUNT_LABEL:-}
       - uns_crypto:/usr/src/app/crypto
       - controller_code:/usr/src/app/controller-override
+      - rtt_credentials:/run/uns-service-credentials
       - ./runtime-tools:/opt/uns-runtime-tools:ro${BIND_MOUNT_LABEL:-}
       - ${UNS_BACKUP_DIR:-./backups}:/var/lib/uns-backups:rw${BIND_MOUNT_LABEL:-}
       - ${UNS_EXTERNAL_RECOVERY_DIR:-./external-recovery}:/var/lib/uns-external-recovery:ro${BIND_MOUNT_LABEL:-}
@@ -111,6 +112,7 @@ volumes:
   questdb_data: {}
   uns_crypto: {}
   controller_code: {}
+  rtt_credentials: {}
 
 networks:
   uns-openhub:
