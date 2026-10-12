@@ -6019,6 +6019,8 @@ CREATE TABLE IF NOT EXISTS public.controller_member_lifecycle_event (
   changed_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(controller_name,revision)
 );
+ALTER TABLE public.controller_member_lifecycle_event
+  ADD COLUMN IF NOT EXISTS detail jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 -- Automation ownership and revisions (same contract as the upgrade migration).
 -- Serialize installation with legacy writers; run in the migration transaction.
