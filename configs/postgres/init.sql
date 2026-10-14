@@ -6109,3 +6109,1486 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.clear_automation_definition_owners();
 DROP TRIGGER IF EXISTS automation_definition_truncate ON public.capture_definitions;
 CREATE TRIGGER automation_definition_truncate AFTER TRUNCATE ON public.capture_definitions
 FOR EACH STATEMENT EXECUTE FUNCTION public.clear_automation_definition_owners();
+
+-- C2-01 standalone authority foundation. No scheduler/helper is enabled here.
+-- Keep resource rows forever: deleting them would reset fencing epochs.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_authority (
+  resource_id text PRIMARY KEY,
+  epoch bigint NOT NULL DEFAULT 0 CHECK (epoch >= 0),
+  job_id uuid,
+  executor_id uuid,
+  lease_until timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT recovery_backup_authority_resource_chk CHECK (
+    resource_id ~ '^backup:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+  ),
+  CONSTRAINT recovery_backup_authority_owner_chk CHECK (
+    (job_id IS NULL AND executor_id IS NULL AND lease_until IS NULL) OR
+    (job_id IS NOT NULL AND executor_id IS NOT NULL AND lease_until IS NOT NULL AND epoch > 0)
+  )
+);
+
+-- Independent of recovery_backup_job cleanup. This is accepted DB evidence,
+-- not an assertion that external helper effects or artifacts are fenced.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_authority_receipt (
+  resource_id text NOT NULL REFERENCES public.recovery_backup_authority(resource_id) ON DELETE RESTRICT,
+  epoch bigint NOT NULL CHECK (epoch > 0),
+  job_id uuid NOT NULL,
+  executor_id uuid NOT NULL,
+  state text NOT NULL CHECK (state IN ('completed', 'failed')),
+  result jsonb NOT NULL,
+  committed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (resource_id, epoch),
+  CONSTRAINT recovery_backup_authority_receipt_result_chk CHECK ((
+    jsonb_typeof(result) = 'object' AND octet_length(result::text) <= 1024 AND
+    result->>'state' = state AND
+    ((state = 'completed' AND
+      result->>'artifactId' ~ '^(environment-backup|recovery-point|cluster-recovery-set)-[A-Za-z0-9._-]{1,128}$' AND
+      result->>'manifestSha256' ~ '^[a-f0-9]{64}$') OR
+     (state = 'failed' AND result->>'reasonCode' ~ '^[A-Z][A-Z0-9_]{0,63}$'))
+  ) IS TRUE)
+);
+
+-- C2-02b1: immutable job binding and publication-pending ledger state.
+-- Receipt rows remain independent from operator job cleanup.
+ALTER TABLE public.recovery_backup_job
+  ADD COLUMN IF NOT EXISTS authority_resource_id text REFERENCES public.recovery_backup_authority(resource_id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS authority_executor_id uuid,
+  ADD COLUMN IF NOT EXISTS authority_epoch bigint;
+
+ALTER TABLE public.recovery_backup_job DROP CONSTRAINT IF EXISTS recovery_backup_job_authority_chk;
+ALTER TABLE public.recovery_backup_job ADD CONSTRAINT recovery_backup_job_authority_chk CHECK (
+  (authority_resource_id IS NULL AND authority_executor_id IS NULL AND authority_epoch IS NULL) OR
+  (authority_resource_id IS NOT NULL AND authority_executor_id IS NOT NULL AND authority_epoch IS NOT NULL AND authority_epoch > 0)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS recovery_backup_job_authority_epoch_idx
+  ON public.recovery_backup_job(authority_resource_id, authority_epoch)
+  WHERE authority_resource_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_job_keep_authority() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.authority_resource_id IS NOT NULL AND
+    (ROW(OLD.id, OLD.database_key, OLD.authority_resource_id, OLD.authority_executor_id, OLD.authority_epoch)
+      IS DISTINCT FROM ROW(NEW.id, NEW.database_key, NEW.authority_resource_id, NEW.authority_executor_id, NEW.authority_epoch)
+      OR OLD.detail->'frozenControllers' IS DISTINCT FROM NEW.detail->'frozenControllers'
+      OR OLD.detail->'deduplicationKey' IS DISTINCT FROM NEW.detail->'deduplicationKey') THEN
+    RAISE EXCEPTION 'backup job authority binding is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_job_keep_authority ON public.recovery_backup_job;
+CREATE TRIGGER recovery_backup_job_keep_authority BEFORE UPDATE ON public.recovery_backup_job
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_job_keep_authority();
+
+-- C2-02b2a: accepted publication receipts are append-only.
+-- Ordinary job cleanup cannot revoke or rewrite an accepted artifact binding.
+-- Privileged maintenance/DB restore remains outside the runtime authority contract.
+CREATE OR REPLACE FUNCTION public.recovery_backup_authority_receipt_keep_result() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'accepted backup authority receipt is immutable';
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_authority_receipt_keep_result ON public.recovery_backup_authority_receipt;
+CREATE TRIGGER recovery_backup_authority_receipt_keep_result BEFORE UPDATE OR DELETE
+ON public.recovery_backup_authority_receipt FOR EACH ROW
+EXECUTE FUNCTION public.recovery_backup_authority_receipt_keep_result();
+
+-- C2-02b2b: immutable cluster manifest binding and member publication ledger.
+-- Independent from operator job cleanup; ordinary runtime UPDATE/DELETE is denied.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_cluster_binding (
+  resource_id text NOT NULL,
+  epoch bigint NOT NULL,
+  job_id uuid NOT NULL,
+  executor_id uuid NOT NULL,
+  artifact_id text NOT NULL,
+  manifest_sha256 text NOT NULL CHECK (manifest_sha256 ~ '^[a-f0-9]{64}$'),
+  manifest text NOT NULL CHECK (octet_length(manifest) BETWEEN 1 AND 262144),
+  accepted_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (resource_id, epoch),
+  FOREIGN KEY (resource_id, epoch) REFERENCES public.recovery_backup_authority_receipt(resource_id, epoch) ON DELETE RESTRICT,
+  CHECK (artifact_id = 'cluster-recovery-set-' || job_id::text),
+  CHECK (encode(sha256(convert_to(manifest, 'UTF8')), 'hex') = manifest_sha256)
+);
+CREATE TABLE IF NOT EXISTS public.recovery_backup_cluster_member_publication (
+  resource_id text NOT NULL,
+  epoch bigint NOT NULL,
+  controller_id_sha256 text NOT NULL CHECK (controller_id_sha256 ~ '^[a-f0-9]{64}$'),
+  config_manifest_sha256 text NOT NULL CHECK (config_manifest_sha256 ~ '^[a-f0-9]{64}$'),
+  rtt_manifest_sha256 text NOT NULL CHECK (rtt_manifest_sha256 ~ '^[a-f0-9]{64}$'),
+  acknowledged_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (resource_id, epoch, controller_id_sha256),
+  FOREIGN KEY (resource_id, epoch) REFERENCES public.recovery_backup_cluster_binding(resource_id, epoch) ON DELETE RESTRICT
+);
+CREATE OR REPLACE FUNCTION public.recovery_backup_cluster_keep_evidence() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'accepted cluster backup evidence is immutable';
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_cluster_keep_evidence ON public.recovery_backup_cluster_binding;
+CREATE TRIGGER recovery_backup_cluster_keep_evidence BEFORE UPDATE OR DELETE ON public.recovery_backup_cluster_binding
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_cluster_keep_evidence();
+DROP TRIGGER IF EXISTS recovery_backup_cluster_keep_evidence ON public.recovery_backup_cluster_member_publication;
+CREATE TRIGGER recovery_backup_cluster_keep_evidence BEFORE UPDATE OR DELETE ON public.recovery_backup_cluster_member_publication
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_cluster_keep_evidence();
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_cluster_bind_manifest() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  m jsonb := NEW.manifest::jsonb;
+  frozen jsonb;
+  coordinator text;
+  expected jsonb;
+  member_ids jsonb;
+  n integer;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.recovery_backup_authority_receipt r
+    WHERE r.resource_id=NEW.resource_id AND r.epoch=NEW.epoch AND r.job_id=NEW.job_id AND r.executor_id=NEW.executor_id
+      AND r.state='completed' AND r.result->>'artifactId'=NEW.artifact_id AND r.result->>'manifestSha256'=NEW.manifest_sha256) THEN
+    RAISE EXCEPTION 'cluster binding requires exact accepted parent receipt';
+  END IF;
+  SELECT j.detail->'frozenControllers', j.executor_controller INTO frozen, coordinator FROM public.recovery_backup_job j
+    WHERE j.id=NEW.job_id AND j.authority_resource_id=NEW.resource_id AND j.authority_epoch=NEW.epoch
+      AND j.authority_executor_id=NEW.executor_id AND j.state='running'
+      AND j.artifact_id=NEW.artifact_id AND j.manifest_sha256=NEW.manifest_sha256;
+  IF frozen IS NULL OR jsonb_typeof(frozen)<>'array' THEN RAISE EXCEPTION 'cluster binding requires frozen job membership'; END IF;
+  SELECT jsonb_agg(h ORDER BY h) INTO expected FROM
+    (SELECT encode(sha256(convert_to(v, 'UTF8')), 'hex') AS h FROM jsonb_array_elements_text(frozen) f(v)) hashes;
+  SELECT jsonb_agg(v->>'controllerIdSha256' ORDER BY v->>'controllerIdSha256') INTO member_ids
+    FROM jsonb_array_elements(m->'members') entries(v);
+  n := jsonb_array_length(frozen);
+  IF (n BETWEEN 1 AND 32 AND m->>'kind'='uns-cluster-recovery-set' AND m->>'schemaVersion'='1'
+      AND m->>'recoverySetId'=NEW.job_id::text AND m->'expectedControllerIdsSha256'=expected AND member_ids=expected
+      AND m->>'coordinatorControllerIdSha256'=encode(sha256(convert_to(coordinator,'UTF8')),'hex')
+      AND m->'coverage'->>'status'='membership-complete'
+      AND (m->'coverage'->>'expectedControllers')::int=n AND (m->'coverage'->>'capturedControllers')::int=n
+      AND (m->'coverage'->>'configComponents')::int=n AND (m->'coverage'->>'rttComponents')::int=n) IS DISTINCT FROM TRUE THEN
+    RAISE EXCEPTION 'cluster manifest does not cover exact frozen job membership';
+  END IF;
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(m->'members') e(v)
+    WHERE (v->>'configArtifactId'='controller-config-'||NEW.job_id::text AND v->>'configFormatVersion'='1'
+      AND v->>'rttArtifactId'='rtt-deployment-'||NEW.job_id::text AND v->>'rttFormatVersion'='2'
+      AND v->>'configManifestSha256' ~ '^[a-f0-9]{64}$' AND v->>'rttManifestSha256' ~ '^[a-f0-9]{64}$') IS DISTINCT FROM TRUE) THEN
+    RAISE EXCEPTION 'cluster contribution identities are invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_cluster_bind_manifest ON public.recovery_backup_cluster_binding;
+CREATE TRIGGER recovery_backup_cluster_bind_manifest BEFORE INSERT ON public.recovery_backup_cluster_binding
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_cluster_bind_manifest();
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_cluster_check_member() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.recovery_backup_cluster_binding b,
+    LATERAL jsonb_array_elements(b.manifest::jsonb->'members') e(v)
+    WHERE b.resource_id=NEW.resource_id AND b.epoch=NEW.epoch
+      AND v->>'controllerIdSha256'=NEW.controller_id_sha256
+      AND v->>'configManifestSha256'=NEW.config_manifest_sha256 AND v->>'rttManifestSha256'=NEW.rtt_manifest_sha256) THEN
+    RAISE EXCEPTION 'member publication does not match accepted cluster contribution';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_cluster_check_member ON public.recovery_backup_cluster_member_publication;
+CREATE TRIGGER recovery_backup_cluster_check_member BEFORE INSERT ON public.recovery_backup_cluster_member_publication
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_cluster_check_member();
+
+-- Read-only publication barrier: accepted parent plus every exact member acknowledgement.
+CREATE OR REPLACE FUNCTION public.recovery_backup_cluster_publication_ready(
+  resource text, job uuid, executor uuid, expected_epoch bigint, artifact text, digest text) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM public.recovery_backup_cluster_binding b
+    JOIN public.recovery_backup_authority_receipt r USING(resource_id,epoch)
+    WHERE b.resource_id=resource AND b.job_id=job AND b.executor_id=executor AND b.epoch=expected_epoch
+      AND b.artifact_id=artifact AND b.manifest_sha256=digest
+      AND r.job_id=job AND r.executor_id=executor AND r.state='completed'
+      AND r.result->>'artifactId'=artifact AND r.result->>'manifestSha256'=digest
+      AND jsonb_array_length(b.manifest::jsonb->'members') BETWEEN 1 AND 32
+      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(b.manifest::jsonb->'members') e(v)
+        WHERE NOT EXISTS (SELECT 1 FROM public.recovery_backup_cluster_member_publication a
+          WHERE a.resource_id=b.resource_id AND a.epoch=b.epoch AND a.controller_id_sha256=v->>'controllerIdSha256'
+            AND a.config_manifest_sha256=v->>'configManifestSha256' AND a.rtt_manifest_sha256=v->>'rttManifestSha256')));
+$$;
+CREATE OR REPLACE FUNCTION public.recovery_backup_cluster_gate_completion() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.authority_resource_id IS NOT NULL AND NEW.state='completed' AND NEW.artifact_id LIKE 'cluster-recovery-set-%'
+    AND NOT public.recovery_backup_cluster_publication_ready(NEW.authority_resource_id,NEW.id,NEW.authority_executor_id,
+      NEW.authority_epoch,NEW.artifact_id,NEW.manifest_sha256) THEN
+    RAISE EXCEPTION 'cluster publication awaits exact member acknowledgements';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_cluster_gate_completion ON public.recovery_backup_job;
+CREATE TRIGGER recovery_backup_cluster_gate_completion BEFORE INSERT OR UPDATE ON public.recovery_backup_job
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_cluster_gate_completion();
+
+-- R1-03a: reviewed-action evidence only. No helper dispatch, lease or publication permission.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_publication_review (
+  review_id uuid PRIMARY KEY,
+  resource_id text NOT NULL,
+  epoch bigint NOT NULL,
+  job_id uuid NOT NULL REFERENCES public.recovery_backup_job(id) ON DELETE RESTRICT,
+  executor_id uuid NOT NULL,
+  artifact_id text NOT NULL,
+  manifest_sha256 text NOT NULL CHECK (manifest_sha256 ~ '^[a-f0-9]{64}$'),
+  ledger_sha256 text NOT NULL CHECK (ledger_sha256 ~ '^[a-f0-9]{64}$'),
+  review_sha256 text UNIQUE NOT NULL CHECK (review_sha256 ~ '^[a-f0-9]{64}$'),
+  review_document text NOT NULL CHECK (octet_length(review_document) BETWEEN 1 AND 32768),
+  requested_by text NOT NULL CHECK (length(requested_by) BETWEEN 1 AND 255),
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  expires_at timestamptz NOT NULL,
+  FOREIGN KEY(resource_id,epoch) REFERENCES public.recovery_backup_cluster_binding(resource_id,epoch) ON DELETE RESTRICT,
+  CHECK (artifact_id='cluster-recovery-set-'||job_id::text),
+  CHECK (expires_at>created_at AND expires_at<=created_at+interval '60 seconds'),
+  CHECK (encode(sha256(convert_to(review_document,'UTF8')),'hex')=review_sha256)
+);
+CREATE INDEX IF NOT EXISTS recovery_backup_publication_review_job_idx ON public.recovery_backup_publication_review(job_id,review_id);
+
+-- Returns only a fingerprint. SQL uses the DB clock, never a caller's wall clock.
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_review_ledger(
+  resource text, job uuid, executor uuid, expected_epoch bigint, artifact text, digest text, coordinator text)
+RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  snapshot jsonb;
+  acknowledgements jsonb;
+  reviews jsonb;
+  valid boolean;
+BEGIN
+  SELECT bool_and(COALESCE(t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND t.tgtype=e.kind
+    AND p.proname=e.guard AND pn.nspname='public',false)) INTO valid
+  FROM (VALUES ('recovery_backup_job','recovery_backup_job_keep_authority',19),('recovery_backup_authority_receipt','recovery_backup_authority_receipt_keep_result',27),('recovery_backup_cluster_binding','recovery_backup_cluster_keep_evidence',27),('recovery_backup_cluster_binding','recovery_backup_cluster_bind_manifest',7),('recovery_backup_cluster_member_publication','recovery_backup_cluster_keep_evidence',27),('recovery_backup_cluster_member_publication','recovery_backup_cluster_check_member',7),('recovery_backup_job','recovery_backup_cluster_gate_completion',23),('recovery_backup_publication_review','recovery_backup_publication_review_keep',27),('recovery_backup_publication_review','recovery_backup_publication_review_check',7)) e(tab,guard,kind)
+  LEFT JOIN pg_namespace n ON n.nspname='public'
+  LEFT JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=e.tab
+  LEFT JOIN pg_trigger t ON t.tgrelid=c.oid AND t.tgname=e.guard
+  LEFT JOIN pg_proc p ON p.oid=t.tgfoid LEFT JOIN pg_namespace pn ON pn.oid=p.pronamespace;
+  IF valid IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
+  IF EXISTS(SELECT 1 FROM public.recovery_backup_job_tombstone WHERE job_id=job) OR
+     EXISTS(SELECT 1 FROM public.recovery_backup_publication_review WHERE job_id=job AND expires_at>clock_timestamp())
+     THEN RETURN NULL; END IF;
+  SELECT jsonb_agg(v ORDER BY v->>'controller_id_sha256') INTO acknowledgements FROM
+    (SELECT to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text) AS v
+     FROM public.recovery_backup_cluster_member_publication a WHERE resource_id=resource AND epoch=expected_epoch LIMIT 33) rows;
+  SELECT jsonb_agg(v ORDER BY v->>'review_id') INTO reviews FROM
+    (SELECT to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text) AS v
+     FROM public.recovery_backup_publication_review a WHERE job_id=job LIMIT 65) rows;
+  IF COALESCE(jsonb_array_length(acknowledgements),0)>32 OR COALESCE(jsonb_array_length(reviews),0)>=64 THEN RETURN NULL; END IF;
+  SELECT jsonb_build_object(
+    'job',to_jsonb(j)||jsonb_build_object('xmin',j.xmin::text),
+    'authority',to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text),
+    'receipt',to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text),
+    'binding',to_jsonb(b)||jsonb_build_object('xmin',b.xmin::text),
+    'acknowledgements',COALESCE(acknowledgements,'[]'::jsonb), 'reviews',COALESCE(reviews,'[]'::jsonb)) INTO snapshot
+  FROM public.recovery_backup_job j
+  JOIN public.recovery_backup_authority a ON a.resource_id=j.authority_resource_id
+  JOIN public.recovery_backup_authority_receipt r ON r.resource_id=a.resource_id AND r.epoch=expected_epoch
+  JOIN public.recovery_backup_cluster_binding b ON b.resource_id=r.resource_id AND b.epoch=r.epoch
+  WHERE j.id=job AND j.authority_resource_id=resource AND j.authority_epoch=expected_epoch AND j.authority_executor_id=executor
+    AND j.executor_controller=coordinator AND j.database_key=encode(sha256(convert_to(resource,'UTF8')),'hex')
+    AND j.state='running' AND j.completed_at IS NULL AND j.format_version=1 AND j.detail->>'publicationState'='pending'
+    AND COALESCE(j.detail->>'cancellationState','')<>'unconfirmed' AND COALESCE(j.detail->>'phase','')<>'cleanup-unconfirmed'
+    AND octet_length(to_jsonb(j)::text)<=65536 AND j.artifact_id=artifact AND j.manifest_sha256=digest
+    AND a.resource_id=resource AND a.epoch=expected_epoch AND a.job_id IS NULL AND a.executor_id IS NULL AND a.lease_until IS NULL
+    AND r.job_id=job AND r.executor_id=executor AND r.state='completed' AND r.result->>'artifactId'=artifact AND r.result->>'manifestSha256'=digest
+    AND b.job_id=job AND b.executor_id=executor AND b.artifact_id=artifact AND b.manifest_sha256=digest;
+  IF snapshot IS NULL THEN RETURN NULL; END IF;
+  RETURN encode(sha256(convert_to(snapshot::text,'UTF8')),'hex');
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_review_keep() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'reviewed publication evidence is immutable'; END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_review_keep ON public.recovery_backup_publication_review;
+CREATE TRIGGER recovery_backup_publication_review_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_publication_review
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_review_keep();
+
+-- Locks also cover absent acknowledgement/tombstone/review rows and guard DDL.
+-- No network/helper work is performed while these bounded locks are held.
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_review_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE d jsonb:=NEW.review_document::jsonb; current_digest text; expected_ids jsonb; supplied_ids jsonb;
+BEGIN
+  LOCK TABLE public.recovery_backup_publication_review IN EXCLUSIVE MODE;
+  LOCK TABLE public.recovery_backup_job,public.recovery_backup_authority,public.recovery_backup_authority_receipt,
+    public.recovery_backup_cluster_binding,public.recovery_backup_cluster_member_publication,public.recovery_backup_job_tombstone IN SHARE MODE;
+  IF (d->>'schemaVersion'='1' AND d->>'kind'='uns-backup-publication-review' AND d->>'action'='resume-original-publication'
+    AND d->>'reviewId'=NEW.review_id::text AND d->'authority'->>'resourceId'=NEW.resource_id
+    AND d->'authority'->>'jobId'=NEW.job_id::text AND d->'authority'->>'executorId'=NEW.executor_id::text
+    AND d->'authority'->>'epoch'=NEW.epoch::text AND d->>'artifactId'=NEW.artifact_id AND d->>'manifestSha256'=NEW.manifest_sha256
+    AND d->>'ledgerSha256'=NEW.ledger_sha256 AND d->>'requestedBy'=NEW.requested_by
+    AND d->>'verificationSha256' ~ '^[a-f0-9]{64}$' AND d->>'coordinatorExecutorId' ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+    AND d->>'coordinatorVersion' ~ '^(2\.(2|[3-9]|[1-9][0-9]+)|([3-9]|[1-9][0-9]+)\.(0|[1-9][0-9]*))\.(0|[1-9][0-9]*)$'
+    AND jsonb_typeof(d->'members')='array' AND jsonb_array_length(d->'members') BETWEEN 2 AND 32
+    AND (d->>'expiresAt')::timestamptz=NEW.expires_at
+    AND (d->>'preparedAt')::timestamptz<=clock_timestamp()+interval '5 seconds'
+    AND (d->>'expiresAt')::timestamptz=(d->>'preparedAt')::timestamptz+interval '60 seconds'
+    AND NEW.expires_at>clock_timestamp()) IS DISTINCT FROM TRUE THEN RAISE EXCEPTION 'invalid reviewed publication binding'; END IF;
+  -- Strict public metadata only; a raw INSERT cannot attach arbitrary secrets or change frozen membership.
+  IF jsonb_typeof(d)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(d))<>16
+    OR d - ARRAY['schemaVersion','kind','action','reviewId','authority','artifactId','manifestSha256','coordinatorController',
+      'coordinatorExecutorId','coordinatorVersion','requestedBy','ledgerSha256','verificationSha256','preparedAt','expiresAt','members']<>'{}'::jsonb
+    OR jsonb_typeof(d->'authority')<>'object' OR (SELECT count(*) FROM jsonb_object_keys(d->'authority'))<>4
+    OR (d->'authority') - ARRAY['resourceId','jobId','executorId','epoch']<>'{}'::jsonb
+    OR NEW.requested_by<>btrim(NEW.requested_by) OR NEW.requested_by ~ E'[\\r\\n]' OR NEW.requested_by=''
+    OR EXISTS(SELECT 1 FROM jsonb_array_elements(d->'members') e(v) WHERE
+      (jsonb_typeof(v)='object' AND (SELECT count(*) FROM jsonb_object_keys(v))=3
+      AND v - ARRAY['controllerIdSha256','memberExecutorId','controllerVersion']='{}'::jsonb
+      AND v->>'controllerIdSha256' ~ '^[a-f0-9]{64}$'
+      AND v->>'memberExecutorId' ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+      AND v->>'controllerVersion' ~ '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+      AND split_part(v->>'controllerVersion','.',1)=split_part(d->>'coordinatorVersion','.',1)
+      AND split_part(v->>'controllerVersion','.',2)=split_part(d->>'coordinatorVersion','.',2)) IS DISTINCT FROM TRUE)
+    THEN RAISE EXCEPTION 'invalid reviewed publication metadata'; END IF;
+  SELECT manifest::jsonb->'expectedControllerIdsSha256' INTO expected_ids
+    FROM public.recovery_backup_cluster_binding WHERE resource_id=NEW.resource_id AND epoch=NEW.epoch;
+  SELECT jsonb_agg(v->>'controllerIdSha256' ORDER BY n) INTO supplied_ids
+    FROM jsonb_array_elements(d->'members') WITH ORDINALITY e(v,n);
+  IF supplied_ids IS DISTINCT FROM expected_ids OR NOT supplied_ids ? encode(sha256(convert_to(d->>'coordinatorController','UTF8')),'hex')
+    THEN RAISE EXCEPTION 'reviewed publication membership changed'; END IF;
+  current_digest:=public.recovery_backup_publication_review_ledger(NEW.resource_id,NEW.job_id,NEW.executor_id,NEW.epoch,
+    NEW.artifact_id,NEW.manifest_sha256,d->>'coordinatorController');
+  IF current_digest IS NULL OR current_digest<>NEW.ledger_sha256 THEN RAISE EXCEPTION 'reviewed publication conditions changed'; END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_review_check ON public.recovery_backup_publication_review;
+CREATE TRIGGER recovery_backup_publication_review_check BEFORE INSERT ON public.recovery_backup_publication_review
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_review_check();
+
+-- R1-03b1: durable reservation only; no helper execution or capture lease renewal.
+-- Reservations remain immutable and blocking even after expiry. Drain/exit proof
+-- and an execution protocol are separate work, never inferred from a timeout.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_publication_attempt (
+  attempt_id uuid PRIMARY KEY,
+  review_id uuid UNIQUE NOT NULL REFERENCES public.recovery_backup_publication_review(review_id) ON DELETE RESTRICT,
+  job_id uuid NOT NULL REFERENCES public.recovery_backup_job(id) ON DELETE RESTRICT,
+  resource_id text NOT NULL,
+  epoch bigint NOT NULL,
+  executor_id uuid NOT NULL,
+  artifact_id text NOT NULL,
+  manifest_sha256 text NOT NULL CHECK(manifest_sha256 ~ '^[a-f0-9]{64}$'),
+  review_sha256 text NOT NULL CHECK(review_sha256 ~ '^[a-f0-9]{64}$'),
+  coordinator_controller text NOT NULL,
+  coordinator_executor_id uuid NOT NULL,
+  coordinator_version text NOT NULL,
+  requested_by text NOT NULL,
+  reserved_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  expires_at timestamptz NOT NULL,
+  FOREIGN KEY(resource_id,epoch) REFERENCES public.recovery_backup_cluster_binding(resource_id,epoch) ON DELETE RESTRICT,
+  CHECK(artifact_id='cluster-recovery-set-'||job_id::text),
+  CHECK(expires_at>reserved_at AND expires_at<=reserved_at+interval '60 seconds')
+);
+CREATE INDEX IF NOT EXISTS recovery_backup_publication_attempt_job_idx ON public.recovery_backup_publication_attempt(job_id);
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_review_ledger_current(
+  resource text, job uuid, executor uuid, expected_epoch bigint, artifact text, digest text, coordinator text, excluded_review uuid)
+RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  snapshot jsonb;
+  acknowledgements jsonb;
+  reviews jsonb;
+  valid boolean;
+BEGIN
+  SELECT bool_and(COALESCE(t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND t.tgtype=e.kind
+    AND p.proname=e.guard AND pn.nspname='public',false)) INTO valid
+  FROM (VALUES ('recovery_backup_job','recovery_backup_job_keep_authority',19),('recovery_backup_authority_receipt','recovery_backup_authority_receipt_keep_result',27),('recovery_backup_cluster_binding','recovery_backup_cluster_keep_evidence',27),('recovery_backup_cluster_binding','recovery_backup_cluster_bind_manifest',7),('recovery_backup_cluster_member_publication','recovery_backup_cluster_keep_evidence',27),('recovery_backup_cluster_member_publication','recovery_backup_cluster_check_member',7),('recovery_backup_job','recovery_backup_cluster_gate_completion',23),('recovery_backup_publication_review','recovery_backup_publication_review_keep',27),('recovery_backup_publication_review','recovery_backup_publication_review_check',7),('recovery_backup_publication_attempt','recovery_backup_publication_attempt_keep',27),('recovery_backup_publication_attempt','recovery_backup_publication_attempt_check',7)) e(tab,guard,kind)
+  LEFT JOIN pg_namespace n ON n.nspname='public'
+  LEFT JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=e.tab
+  LEFT JOIN pg_trigger t ON t.tgrelid=c.oid AND t.tgname=e.guard
+  LEFT JOIN pg_proc p ON p.oid=t.tgfoid LEFT JOIN pg_namespace pn ON pn.oid=p.pronamespace;
+  IF valid IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
+  IF EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt WHERE job_id=job) OR
+     EXISTS(SELECT 1 FROM public.recovery_backup_job_tombstone WHERE job_id=job) OR
+     EXISTS(SELECT 1 FROM public.recovery_backup_publication_review WHERE job_id=job AND review_id IS DISTINCT FROM excluded_review AND expires_at>clock_timestamp())
+     THEN RETURN NULL; END IF;
+  SELECT jsonb_agg(v ORDER BY v->>'controller_id_sha256') INTO acknowledgements FROM
+    (SELECT to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text) AS v
+     FROM public.recovery_backup_cluster_member_publication a WHERE resource_id=resource AND epoch=expected_epoch LIMIT 33) rows;
+  SELECT jsonb_agg(v ORDER BY v->>'review_id') INTO reviews FROM
+    (SELECT to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text) AS v
+     FROM public.recovery_backup_publication_review a WHERE job_id=job AND review_id IS DISTINCT FROM excluded_review LIMIT 65) rows;
+  IF COALESCE(jsonb_array_length(acknowledgements),0)>32 OR COALESCE(jsonb_array_length(reviews),0)>=64 THEN RETURN NULL; END IF;
+  SELECT jsonb_build_object(
+    'job',to_jsonb(j)||jsonb_build_object('xmin',j.xmin::text),
+    'authority',to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text),
+    'receipt',to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text),
+    'binding',to_jsonb(b)||jsonb_build_object('xmin',b.xmin::text),
+    'acknowledgements',COALESCE(acknowledgements,'[]'::jsonb), 'reviews',COALESCE(reviews,'[]'::jsonb)) INTO snapshot
+  FROM public.recovery_backup_job j
+  JOIN public.recovery_backup_authority a ON a.resource_id=j.authority_resource_id
+  JOIN public.recovery_backup_authority_receipt r ON r.resource_id=a.resource_id AND r.epoch=expected_epoch
+  JOIN public.recovery_backup_cluster_binding b ON b.resource_id=r.resource_id AND b.epoch=r.epoch
+  WHERE j.id=job AND j.authority_resource_id=resource AND j.authority_epoch=expected_epoch AND j.authority_executor_id=executor
+    AND j.executor_controller=coordinator AND j.database_key=encode(sha256(convert_to(resource,'UTF8')),'hex')
+    AND j.state='running' AND j.completed_at IS NULL AND j.format_version=1 AND j.detail->>'publicationState'='pending'
+    AND COALESCE(j.detail->>'cancellationState','')<>'unconfirmed' AND COALESCE(j.detail->>'phase','')<>'cleanup-unconfirmed'
+    AND octet_length(to_jsonb(j)::text)<=65536 AND j.artifact_id=artifact AND j.manifest_sha256=digest
+    AND a.resource_id=resource AND a.epoch=expected_epoch AND a.job_id IS NULL AND a.executor_id IS NULL AND a.lease_until IS NULL
+    AND r.job_id=job AND r.executor_id=executor AND r.state='completed' AND r.result->>'artifactId'=artifact AND r.result->>'manifestSha256'=digest
+    AND b.job_id=job AND b.executor_id=executor AND b.artifact_id=artifact AND b.manifest_sha256=digest;
+  IF snapshot IS NULL THEN RETURN NULL; END IF;
+  RETURN encode(sha256(convert_to(snapshot::text,'UTF8')),'hex');
+END;
+$$;
+
+-- Preserve the existing read-only API; every new review also checks the reservation
+-- guards. An existing reservation prevents fresh review, including after expiry.
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_review_ledger(
+  resource text, job uuid, executor uuid, expected_epoch bigint, artifact text, digest text, coordinator text)
+RETURNS text LANGUAGE sql AS $$
+  SELECT public.recovery_backup_publication_review_ledger_current(resource,job,executor,expected_epoch,artifact,digest,coordinator,NULL::uuid);
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_attempt_keep() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'publication reservation is immutable; expiry is not drain proof'; END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_attempt_keep ON public.recovery_backup_publication_attempt;
+CREATE TRIGGER recovery_backup_publication_attempt_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_publication_attempt
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_attempt_keep();
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_attempt_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE r public.recovery_backup_publication_review%ROWTYPE; d jsonb; current_digest text;
+BEGIN
+  LOCK TABLE public.recovery_backup_publication_attempt,public.recovery_backup_publication_review IN EXCLUSIVE MODE;
+  LOCK TABLE public.recovery_backup_job,public.recovery_backup_authority,public.recovery_backup_authority_receipt,
+    public.recovery_backup_cluster_binding,public.recovery_backup_cluster_member_publication,public.recovery_backup_job_tombstone IN SHARE MODE;
+  SELECT * INTO r FROM public.recovery_backup_publication_review WHERE review_id=NEW.review_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'recorded publication review required'; END IF;
+  d:=r.review_document::jsonb;
+  IF (NEW.job_id=r.job_id AND NEW.resource_id=r.resource_id AND NEW.epoch=r.epoch AND NEW.executor_id=r.executor_id
+    AND NEW.artifact_id=r.artifact_id AND NEW.manifest_sha256=r.manifest_sha256 AND NEW.review_sha256=r.review_sha256
+    AND NEW.coordinator_controller=d->>'coordinatorController' AND NEW.coordinator_executor_id::text=d->>'coordinatorExecutorId'
+    AND NEW.coordinator_version=d->>'coordinatorVersion' AND NEW.requested_by=r.requested_by AND NEW.expires_at=r.expires_at
+    AND r.expires_at>clock_timestamp()) IS DISTINCT FROM TRUE THEN RAISE EXCEPTION 'publication reservation binding changed or expired'; END IF;
+  -- Ignore only this immutable review when recomputing its original ledger digest.
+  -- No job/authority/receipt/binding/acknowledgement change or second reservation is allowed.
+  current_digest:=public.recovery_backup_publication_review_ledger_current(r.resource_id,r.job_id,r.executor_id,r.epoch,
+    r.artifact_id,r.manifest_sha256,d->>'coordinatorController',r.review_id);
+  IF current_digest IS NULL OR current_digest<>r.ledger_sha256 THEN RAISE EXCEPTION 'publication reservation conditions changed'; END IF;
+  NEW.reserved_at:=clock_timestamp();
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_attempt_check ON public.recovery_backup_publication_attempt;
+CREATE TRIGGER recovery_backup_publication_attempt_check BEFORE INSERT ON public.recovery_backup_publication_attempt
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_attempt_check();
+
+-- R1-03b2: one exact execution per original component, immutable successful
+-- process-group drain evidence. Failed/unknown execution is retained indefinitely.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_publication_execution (
+  attempt_id uuid NOT NULL REFERENCES public.recovery_backup_publication_attempt(attempt_id) ON DELETE RESTRICT,
+  controller_id_sha256 text NOT NULL CHECK(controller_id_sha256 ~ '^[a-f0-9]{64}$'),
+  component text NOT NULL CHECK(component IN ('member','parent')),
+  request_id uuid UNIQUE NOT NULL,
+  member_executor_id uuid NOT NULL,
+  helper_executor_id uuid UNIQUE NOT NULL,
+  core_sha256 text NOT NULL CHECK(core_sha256 ~ '^[a-f0-9]{64}$'),
+  started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY(attempt_id,controller_id_sha256,component)
+);
+CREATE TABLE IF NOT EXISTS public.recovery_backup_publication_drain (
+  attempt_id uuid NOT NULL,
+  controller_id_sha256 text NOT NULL,
+  component text NOT NULL,
+  request_id uuid NOT NULL,
+  member_executor_id uuid NOT NULL,
+  helper_executor_id uuid NOT NULL,
+  helper_pid integer NOT NULL CHECK(helper_pid>0),
+  process_group_id integer NOT NULL CHECK(process_group_id=helper_pid),
+  exit_code integer NOT NULL CHECK(exit_code=0),
+  result_document jsonb NOT NULL CHECK(octet_length(result_document::text)<=2048),
+  drained_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY(attempt_id,controller_id_sha256,component),
+  FOREIGN KEY(attempt_id,controller_id_sha256,component) REFERENCES public.recovery_backup_publication_execution ON DELETE RESTRICT
+);
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_execution_keep() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'execution and drain evidence are immutable; expiry is not process exit'; END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_execution_keep ON public.recovery_backup_publication_execution;
+CREATE TRIGGER recovery_backup_publication_execution_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_publication_execution
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_execution_keep();
+DROP TRIGGER IF EXISTS recovery_backup_publication_execution_keep ON public.recovery_backup_publication_drain;
+CREATE TRIGGER recovery_backup_publication_execution_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_publication_drain
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_execution_keep();
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_execution_original_ledger(
+  resource text, job uuid, executor uuid, expected_epoch bigint, artifact text, digest text, coordinator text, excluded_review uuid, excluded_attempt uuid)
+RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  snapshot jsonb;
+  acknowledgements jsonb;
+  reviews jsonb;
+  valid boolean;
+BEGIN
+  SELECT bool_and(COALESCE(t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND t.tgtype=e.kind
+    AND p.proname=e.guard AND pn.nspname='public',false)) INTO valid
+  FROM (VALUES ('recovery_backup_job','recovery_backup_job_keep_authority',19),('recovery_backup_authority_receipt','recovery_backup_authority_receipt_keep_result',27),('recovery_backup_cluster_binding','recovery_backup_cluster_keep_evidence',27),('recovery_backup_cluster_binding','recovery_backup_cluster_bind_manifest',7),('recovery_backup_cluster_member_publication','recovery_backup_cluster_keep_evidence',27),('recovery_backup_cluster_member_publication','recovery_backup_cluster_check_member',7),('recovery_backup_job','recovery_backup_cluster_gate_completion',23),('recovery_backup_publication_review','recovery_backup_publication_review_keep',27),('recovery_backup_publication_review','recovery_backup_publication_review_check',7),('recovery_backup_publication_attempt','recovery_backup_publication_attempt_keep',27),('recovery_backup_publication_attempt','recovery_backup_publication_attempt_check',7)) e(tab,guard,kind)
+  LEFT JOIN pg_namespace n ON n.nspname='public'
+  LEFT JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=e.tab
+  LEFT JOIN pg_trigger t ON t.tgrelid=c.oid AND t.tgname=e.guard
+  LEFT JOIN pg_proc p ON p.oid=t.tgfoid LEFT JOIN pg_namespace pn ON pn.oid=p.pronamespace;
+  IF valid IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
+  IF EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt WHERE job_id=job AND attempt_id IS DISTINCT FROM excluded_attempt) OR
+     EXISTS(SELECT 1 FROM public.recovery_backup_job_tombstone WHERE job_id=job) OR
+     EXISTS(SELECT 1 FROM public.recovery_backup_publication_review WHERE job_id=job AND review_id IS DISTINCT FROM excluded_review AND expires_at>clock_timestamp())
+     THEN RETURN NULL; END IF;
+  SELECT jsonb_agg(v ORDER BY v->>'controller_id_sha256') INTO acknowledgements FROM
+    (SELECT to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text) AS v
+     FROM public.recovery_backup_cluster_member_publication a WHERE resource_id=resource AND epoch=expected_epoch LIMIT 33) rows;
+  SELECT jsonb_agg(v ORDER BY v->>'review_id') INTO reviews FROM
+    (SELECT to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text) AS v
+     FROM public.recovery_backup_publication_review a WHERE job_id=job AND review_id IS DISTINCT FROM excluded_review LIMIT 65) rows;
+  IF COALESCE(jsonb_array_length(acknowledgements),0)>32 OR COALESCE(jsonb_array_length(reviews),0)>=64 THEN RETURN NULL; END IF;
+  SELECT jsonb_build_object(
+    'job',to_jsonb(j)||jsonb_build_object('xmin',j.xmin::text),
+    'authority',to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text),
+    'receipt',to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text),
+    'binding',to_jsonb(b)||jsonb_build_object('xmin',b.xmin::text),
+    'acknowledgements',COALESCE(acknowledgements,'[]'::jsonb), 'reviews',COALESCE(reviews,'[]'::jsonb)) INTO snapshot
+  FROM public.recovery_backup_job j
+  JOIN public.recovery_backup_authority a ON a.resource_id=j.authority_resource_id
+  JOIN public.recovery_backup_authority_receipt r ON r.resource_id=a.resource_id AND r.epoch=expected_epoch
+  JOIN public.recovery_backup_cluster_binding b ON b.resource_id=r.resource_id AND b.epoch=r.epoch
+  WHERE j.id=job AND j.authority_resource_id=resource AND j.authority_epoch=expected_epoch AND j.authority_executor_id=executor
+    AND j.executor_controller=coordinator AND j.database_key=encode(sha256(convert_to(resource,'UTF8')),'hex')
+    AND j.state='running' AND j.completed_at IS NULL AND j.format_version=1 AND j.detail->>'publicationState'='pending'
+    AND COALESCE(j.detail->>'cancellationState','')<>'unconfirmed' AND COALESCE(j.detail->>'phase','')<>'cleanup-unconfirmed'
+    AND octet_length(to_jsonb(j)::text)<=65536 AND j.artifact_id=artifact AND j.manifest_sha256=digest
+    AND a.resource_id=resource AND a.epoch=expected_epoch AND a.job_id IS NULL AND a.executor_id IS NULL AND a.lease_until IS NULL
+    AND r.job_id=job AND r.executor_id=executor AND r.state='completed' AND r.result->>'artifactId'=artifact AND r.result->>'manifestSha256'=digest
+    AND b.job_id=job AND b.executor_id=executor AND b.artifact_id=artifact AND b.manifest_sha256=digest;
+  IF snapshot IS NULL THEN RETURN NULL; END IF;
+  RETURN encode(sha256(convert_to(snapshot::text,'UTF8')),'hex');
+END;
+$$;
+
+
+-- Exact immutable original evidence plus current released authority. Member acks
+-- and this attempt's own execution/drain rows are the only expected additions.
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_execution_core(attempt uuid) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE snapshot jsonb; valid boolean;
+BEGIN
+  SELECT bool_and(COALESCE(t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND t.tgtype=e.kind
+    AND p.proname=e.guard AND pn.nspname='public',false)) INTO valid
+  FROM (VALUES
+    ('recovery_backup_job','recovery_backup_job_keep_authority',19),
+    ('recovery_backup_authority_receipt','recovery_backup_authority_receipt_keep_result',27),
+    ('recovery_backup_cluster_binding','recovery_backup_cluster_keep_evidence',27),
+    ('recovery_backup_cluster_binding','recovery_backup_cluster_bind_manifest',7),
+    ('recovery_backup_cluster_member_publication','recovery_backup_cluster_keep_evidence',27),
+    ('recovery_backup_cluster_member_publication','recovery_backup_cluster_check_member',7),
+    ('recovery_backup_job','recovery_backup_cluster_gate_completion',23),
+    ('recovery_backup_publication_review','recovery_backup_publication_review_keep',27),
+    ('recovery_backup_publication_review','recovery_backup_publication_review_check',7),
+    ('recovery_backup_publication_attempt','recovery_backup_publication_attempt_keep',27),
+    ('recovery_backup_publication_attempt','recovery_backup_publication_attempt_check',7),
+    ('recovery_backup_publication_execution','recovery_backup_publication_execution_keep',27),
+    ('recovery_backup_publication_execution','recovery_backup_publication_execution_check',7),
+    ('recovery_backup_publication_drain','recovery_backup_publication_execution_keep',27),
+    ('recovery_backup_publication_drain','recovery_backup_publication_drain_check',7),
+    ('recovery_backup_cluster_member_publication','recovery_backup_publication_ack_gate',7),
+    ('recovery_backup_job','recovery_backup_publication_completion_gate',23)) e(tab,guard,kind)
+  LEFT JOIN pg_namespace n ON n.nspname='public'
+  LEFT JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=e.tab
+  LEFT JOIN pg_trigger t ON t.tgrelid=c.oid AND t.tgname=e.guard
+  LEFT JOIN pg_proc p ON p.oid=t.tgfoid LEFT JOIN pg_namespace pn ON pn.oid=p.pronamespace;
+  IF valid IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
+  SELECT jsonb_build_object('job',to_jsonb(j)||jsonb_build_object('xmin',j.xmin::text),
+    'authority',to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text),
+    'receipt',to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text),
+    'binding',to_jsonb(b)||jsonb_build_object('xmin',b.xmin::text),
+    'review',to_jsonb(v)||jsonb_build_object('xmin',v.xmin::text),
+    'attempt',to_jsonb(x)||jsonb_build_object('xmin',x.xmin::text)) INTO snapshot
+  FROM public.recovery_backup_publication_attempt x
+  JOIN public.recovery_backup_publication_review v USING(review_id)
+  JOIN public.recovery_backup_job j ON j.id=x.job_id
+  JOIN public.recovery_backup_authority a ON a.resource_id=x.resource_id
+  JOIN public.recovery_backup_authority_receipt r ON r.resource_id=x.resource_id AND r.epoch=x.epoch
+  JOIN public.recovery_backup_cluster_binding b ON b.resource_id=x.resource_id AND b.epoch=x.epoch
+  WHERE x.attempt_id=attempt AND x.expires_at>clock_timestamp() AND x.review_sha256=v.review_sha256
+    AND j.authority_resource_id=x.resource_id AND j.authority_epoch=x.epoch AND j.authority_executor_id=x.executor_id
+    AND j.executor_controller=x.coordinator_controller AND j.database_key=encode(sha256(convert_to(x.resource_id,'UTF8')),'hex')
+    AND j.state='running' AND j.completed_at IS NULL AND j.format_version=1 AND j.detail->>'publicationState'='pending'
+    AND j.detail->>'publicationLockProtocol'='kernel-v1'
+    AND COALESCE(j.detail->>'cancellationState','')<>'unconfirmed' AND COALESCE(j.detail->>'phase','')<>'cleanup-unconfirmed'
+    AND j.artifact_id=x.artifact_id AND j.manifest_sha256=x.manifest_sha256
+    AND a.epoch=x.epoch AND a.job_id IS NULL AND a.executor_id IS NULL AND a.lease_until IS NULL
+    AND r.job_id=x.job_id AND r.executor_id=x.executor_id AND r.state='completed'
+    AND r.result->>'artifactId'=x.artifact_id AND r.result->>'manifestSha256'=x.manifest_sha256
+    AND b.job_id=x.job_id AND b.executor_id=x.executor_id AND b.artifact_id=x.artifact_id AND b.manifest_sha256=x.manifest_sha256
+    AND NOT EXISTS(SELECT 1 FROM public.recovery_backup_job_tombstone WHERE job_id=x.job_id);
+  IF snapshot IS NULL THEN RETURN NULL; END IF;
+  RETURN encode(sha256(convert_to(snapshot::text,'UTF8')),'hex');
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_parent_ready(attempt uuid) RETURNS boolean LANGUAGE sql AS $$
+  SELECT EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt a
+    JOIN public.recovery_backup_cluster_binding b USING(resource_id,epoch)
+    WHERE a.attempt_id=attempt AND NOT EXISTS(
+      SELECT 1 FROM jsonb_array_elements(b.manifest::jsonb->'members') m(v)
+      WHERE NOT EXISTS(SELECT 1 FROM public.recovery_backup_publication_drain d
+        WHERE d.attempt_id=a.attempt_id AND d.component='member' AND d.controller_id_sha256=v->>'controllerIdSha256'
+          AND d.result_document->>'controllerIdSha256'=v->>'controllerIdSha256'
+          AND d.result_document->>'configManifestSha256'=v->>'configManifestSha256'
+          AND d.result_document->>'rttManifestSha256'=v->>'rttManifestSha256'))
+    AND public.recovery_backup_cluster_publication_ready(a.resource_id,a.job_id,a.executor_id,a.epoch,a.artifact_id,a.manifest_sha256));
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_execution_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE a public.recovery_backup_publication_attempt%ROWTYPE; v public.recovery_backup_publication_review%ROWTYPE;
+  current_core text; first_core text; original_ledger text;
+BEGIN
+  LOCK TABLE public.recovery_backup_publication_execution,public.recovery_backup_publication_drain,
+    public.recovery_backup_publication_attempt,public.recovery_backup_publication_review IN EXCLUSIVE MODE;
+  LOCK TABLE public.recovery_backup_job,public.recovery_backup_authority,public.recovery_backup_authority_receipt,
+    public.recovery_backup_cluster_binding,public.recovery_backup_cluster_member_publication,public.recovery_backup_job_tombstone IN SHARE MODE;
+  SELECT * INTO a FROM public.recovery_backup_publication_attempt WHERE attempt_id=NEW.attempt_id;
+  SELECT * INTO v FROM public.recovery_backup_publication_review WHERE review_id=a.review_id;
+  current_core:=public.recovery_backup_publication_execution_core(NEW.attempt_id);
+  IF current_core IS NULL THEN RAISE EXCEPTION 'publication execution authorization unavailable'; END IF;
+  SELECT core_sha256 INTO first_core FROM public.recovery_backup_publication_execution WHERE attempt_id=a.attempt_id LIMIT 1;
+  IF first_core IS NULL THEN
+    original_ledger:=public.recovery_backup_publication_execution_original_ledger(a.resource_id,a.job_id,a.executor_id,a.epoch,
+      a.artifact_id,a.manifest_sha256,a.coordinator_controller,a.review_id,a.attempt_id);
+    IF original_ledger IS NULL OR original_ledger<>v.ledger_sha256 THEN RAISE EXCEPTION 'reviewed original evidence changed'; END IF;
+  ELSIF first_core<>current_core THEN RAISE EXCEPTION 'original execution evidence changed'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM jsonb_array_elements(v.review_document::jsonb->'members') m(v)
+    WHERE m.v->>'controllerIdSha256'=NEW.controller_id_sha256 AND m.v->>'memberExecutorId'=NEW.member_executor_id::text) OR
+    (NEW.component='parent' AND (NEW.controller_id_sha256<>encode(sha256(convert_to(a.coordinator_controller,'UTF8')),'hex')
+      OR NOT public.recovery_backup_publication_parent_ready(a.attempt_id))) THEN RAISE EXCEPTION 'component or current process does not match review'; END IF;
+  NEW.core_sha256:=current_core; NEW.started_at:=clock_timestamp(); RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_execution_check ON public.recovery_backup_publication_execution;
+CREATE TRIGGER recovery_backup_publication_execution_check BEFORE INSERT ON public.recovery_backup_publication_execution
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_execution_check();
+
+-- Read by the helper directly, before and after each original rename. No old
+-- capture lease is revived; no worker may replay a running or drained claim.
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_execution_authorized(
+  attempt uuid, request uuid, worker uuid, helper uuid, controller_hash text, part text,
+  resource text, job uuid, executor uuid, expected_epoch bigint, artifact text, digest text, review_digest text,
+  coordinator_worker uuid, coordinator text, coordinator_version text, member_version text)
+RETURNS boolean LANGUAGE sql AS $$
+  SELECT EXISTS(SELECT 1 FROM public.recovery_backup_publication_execution e
+    JOIN public.recovery_backup_publication_attempt a USING(attempt_id)
+    JOIN public.recovery_backup_publication_review r USING(review_id)
+    WHERE a.attempt_id=$1 AND e.request_id=$2 AND e.member_executor_id=$3 AND e.helper_executor_id=$4
+      AND e.controller_id_sha256=$5 AND e.component=$6 AND a.resource_id=$7 AND a.job_id=$8
+      AND a.executor_id=$9 AND a.epoch=$10 AND a.artifact_id=$11 AND a.manifest_sha256=$12
+      AND a.review_sha256=$13 AND a.coordinator_executor_id=$14
+      AND a.coordinator_controller=$15 AND a.coordinator_version=$16
+      AND e.core_sha256=public.recovery_backup_publication_execution_core(a.attempt_id)
+      AND EXISTS(SELECT 1 FROM jsonb_array_elements(r.review_document::jsonb->'members') m(v)
+        WHERE v->>'controllerIdSha256'=$5 AND v->>'memberExecutorId'=$3::text AND v->>'controllerVersion'=$17)
+      AND NOT EXISTS(SELECT 1 FROM public.recovery_backup_publication_drain d
+        WHERE d.attempt_id=e.attempt_id AND d.controller_id_sha256=e.controller_id_sha256 AND d.component=e.component)
+      AND ($6='member' OR public.recovery_backup_publication_parent_ready(a.attempt_id)));
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_drain_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE e public.recovery_backup_publication_execution%ROWTYPE; a public.recovery_backup_publication_attempt%ROWTYPE; m jsonb;
+BEGIN
+  LOCK TABLE public.recovery_backup_publication_execution,public.recovery_backup_publication_drain,
+    public.recovery_backup_publication_attempt,public.recovery_backup_publication_review IN EXCLUSIVE MODE;
+  LOCK TABLE public.recovery_backup_job,public.recovery_backup_authority,public.recovery_backup_authority_receipt,
+    public.recovery_backup_cluster_binding,public.recovery_backup_cluster_member_publication,public.recovery_backup_job_tombstone IN SHARE MODE;
+  SELECT * INTO e FROM public.recovery_backup_publication_execution
+    WHERE attempt_id=NEW.attempt_id AND controller_id_sha256=NEW.controller_id_sha256 AND component=NEW.component;
+  SELECT * INTO a FROM public.recovery_backup_publication_attempt WHERE attempt_id=NEW.attempt_id;
+  IF (e.request_id=NEW.request_id AND e.member_executor_id=NEW.member_executor_id AND e.helper_executor_id=NEW.helper_executor_id
+    AND e.core_sha256=public.recovery_backup_publication_execution_core(a.attempt_id)) IS DISTINCT FROM TRUE THEN
+    RAISE EXCEPTION 'exact successful process exit and unchanged authority required'; END IF;
+  IF NEW.component='member' THEN
+    SELECT v INTO m FROM public.recovery_backup_cluster_binding b,LATERAL jsonb_array_elements(b.manifest::jsonb->'members') x(v)
+      WHERE b.resource_id=a.resource_id AND b.epoch=a.epoch AND v->>'controllerIdSha256'=NEW.controller_id_sha256;
+    IF NEW.result_document<>jsonb_build_object('controllerIdSha256',m->>'controllerIdSha256',
+      'configManifestSha256',m->>'configManifestSha256','rttManifestSha256',m->>'rttManifestSha256') THEN
+      RAISE EXCEPTION 'member result must match every original digest'; END IF;
+  ELSE
+    IF NOT public.recovery_backup_publication_parent_ready(a.attempt_id) OR NEW.result_document<>jsonb_build_object(
+      'id',a.artifact_id,'formatVersion',1,'manifestSha256',a.manifest_sha256) THEN RAISE EXCEPTION 'parent awaits every drained original member'; END IF;
+  END IF;
+  NEW.drained_at:=clock_timestamp(); RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_drain_check ON public.recovery_backup_publication_drain;
+CREATE TRIGGER recovery_backup_publication_drain_check BEFORE INSERT ON public.recovery_backup_publication_drain
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_drain_check();
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_ack_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt a WHERE a.resource_id=NEW.resource_id AND a.epoch=NEW.epoch)
+    AND NOT EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt a JOIN public.recovery_backup_publication_drain d USING(attempt_id)
+      WHERE a.resource_id=NEW.resource_id AND a.epoch=NEW.epoch AND d.component='member' AND d.controller_id_sha256=NEW.controller_id_sha256
+        AND d.result_document->>'configManifestSha256'=NEW.config_manifest_sha256 AND d.result_document->>'rttManifestSha256'=NEW.rtt_manifest_sha256)
+    THEN RAISE EXCEPTION 'reviewed member acknowledgement requires exact successful helper drain'; END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_ack_gate ON public.recovery_backup_cluster_member_publication;
+CREATE TRIGGER recovery_backup_publication_ack_gate BEFORE INSERT ON public.recovery_backup_cluster_member_publication
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_ack_gate();
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_completion_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.state='completed' AND EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt WHERE job_id=NEW.id)
+    AND NOT EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt a JOIN public.recovery_backup_publication_drain d USING(attempt_id)
+      WHERE a.job_id=NEW.id AND d.component='parent') THEN RAISE EXCEPTION 'reviewed completion requires exact successful parent helper drain'; END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_completion_gate ON public.recovery_backup_job;
+CREATE TRIGGER recovery_backup_publication_completion_gate BEFORE INSERT OR UPDATE ON public.recovery_backup_job
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_completion_gate();
+
+-- R1-03c2a: reviewed revocation only. Every immutable old attempt continues
+-- blocking new review/admission. Reuse and successor attempts are a separate cut.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_publication_closure (
+  closure_id uuid PRIMARY KEY,
+  attempt_id uuid UNIQUE NOT NULL REFERENCES public.recovery_backup_publication_attempt(attempt_id) ON DELETE RESTRICT,
+  closure_document text NOT NULL CHECK(octet_length(closure_document)<=32768),
+  closure_sha256 text UNIQUE NOT NULL CHECK(closure_sha256 ~ '^[a-f0-9]{64}$'),
+  inspection_sha256 text NOT NULL CHECK(inspection_sha256 ~ '^[a-f0-9]{64}$'),
+  requested_by text NOT NULL CHECK(length(requested_by) BETWEEN 1 AND 255),
+  expires_at timestamptz NOT NULL,
+  closed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_closure_keep() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'reviewed closure is immutable; retained claims and drain evidence must not be erased'; END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_closure_keep ON public.recovery_backup_publication_closure;
+CREATE TRIGGER recovery_backup_publication_closure_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_publication_closure
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_closure_keep();
+
+DROP FUNCTION IF EXISTS public.recovery_backup_publication_inspection(uuid,text);
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_inspection(attempt uuid, resource text)
+RETURNS TABLE(snapshot jsonb, oversized boolean, evidence_sha256 text, current_core text, original_ledger text, observed_at timestamptz, preclosure_evidence_sha256 text)
+LANGUAGE sql AS $$
+WITH original AS (
+          SELECT jsonb_build_object(
+            'attempt',to_jsonb(a)||jsonb_build_object('epoch',a.epoch::text,'xmin',a.xmin::text),
+            'job',to_jsonb(j)||jsonb_build_object('authority_epoch',j.authority_epoch::text,'xmin',j.xmin::text),
+            'current',to_jsonb(c)||jsonb_build_object('epoch',c.epoch::text,'xmin',c.xmin::text),
+            'receipt',to_jsonb(r)||jsonb_build_object('epoch',r.epoch::text,'xmin',r.xmin::text),
+            'binding',to_jsonb(b)||jsonb_build_object('epoch',b.epoch::text,'xmin',b.xmin::text),
+            'review',to_jsonb(v)||jsonb_build_object('epoch',v.epoch::text,'xmin',v.xmin::text),
+            'executions',COALESCE((SELECT jsonb_agg(row ORDER BY row->>'controller_id_sha256',row->>'component') FROM
+              (SELECT to_jsonb(e)||jsonb_build_object('xmin',e.xmin::text) AS row FROM public.recovery_backup_publication_execution e WHERE e.attempt_id=a.attempt_id LIMIT 34) q),'[]'::jsonb),
+            'drains',COALESCE((SELECT jsonb_agg(row ORDER BY row->>'controller_id_sha256',row->>'component') FROM
+              (SELECT to_jsonb(d)||jsonb_build_object('xmin',d.xmin::text) AS row FROM public.recovery_backup_publication_drain d WHERE d.attempt_id=a.attempt_id LIMIT 34) q),'[]'::jsonb),
+            'acknowledgements',COALESCE((SELECT jsonb_agg(row ORDER BY row->>'controller_id_sha256') FROM
+              (SELECT to_jsonb(k)||jsonb_build_object('epoch',k.epoch::text,'xmin',k.xmin::text) AS row FROM public.recovery_backup_cluster_member_publication k WHERE k.resource_id=a.resource_id AND k.epoch=a.epoch LIMIT 33) q),'[]'::jsonb),
+            'closure',to_jsonb(k)||jsonb_build_object('xmin',k.xmin::text),
+            'tombstone',EXISTS(SELECT 1 FROM public.recovery_backup_job_tombstone WHERE job_id=a.job_id)) AS snapshot,
+          encode(sha256(convert_to(jsonb_build_object(
+            'job',to_jsonb(j)||jsonb_build_object('xmin',j.xmin::text),
+            'authority',to_jsonb(c)||jsonb_build_object('xmin',c.xmin::text),
+            'receipt',to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text),
+            'binding',to_jsonb(b)||jsonb_build_object('xmin',b.xmin::text),
+            'review',to_jsonb(v)||jsonb_build_object('xmin',v.xmin::text),
+            'attempt',to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text))::text,'UTF8')),'hex') AS current_core
+          FROM public.recovery_backup_publication_attempt a
+          LEFT JOIN public.recovery_backup_job j ON j.id=a.job_id
+          LEFT JOIN public.recovery_backup_authority c ON c.resource_id=a.resource_id
+          LEFT JOIN public.recovery_backup_authority_receipt r ON r.resource_id=a.resource_id AND r.epoch=a.epoch
+          LEFT JOIN public.recovery_backup_cluster_binding b ON b.resource_id=a.resource_id AND b.epoch=a.epoch
+          LEFT JOIN public.recovery_backup_publication_review v ON v.review_id=a.review_id
+          LEFT JOIN public.recovery_backup_publication_closure k USING(attempt_id)
+          WHERE a.attempt_id=$1::uuid AND a.resource_id=$2)
+          SELECT CASE WHEN octet_length(snapshot::text)<=1048576 THEN snapshot END AS snapshot,
+            CASE WHEN octet_length(snapshot::text)>1048576 THEN true ELSE false END AS oversized,
+            encode(sha256(convert_to(snapshot::text,'UTF8')),'hex') AS evidence_sha256,current_core,
+            CASE WHEN jsonb_array_length(snapshot->'executions')=0 THEN public.recovery_backup_publication_execution_original_ledger(
+              snapshot->'attempt'->>'resource_id',(snapshot->'attempt'->>'job_id')::uuid,(snapshot->'attempt'->>'executor_id')::uuid,
+              (snapshot->'attempt'->>'epoch')::bigint,snapshot->'attempt'->>'artifact_id',snapshot->'attempt'->>'manifest_sha256',
+              snapshot->'attempt'->>'coordinator_controller',(snapshot->'attempt'->>'review_id')::uuid,(snapshot->'attempt'->>'attempt_id')::uuid) END AS original_ledger,
+            clock_timestamp() AS observed_at,
+            encode(sha256(convert_to((snapshot||'{"closure":null}'::jsonb)::text,'UTF8')),'hex') AS preclosure_evidence_sha256 FROM original;
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_execution_core(attempt uuid) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE snapshot jsonb; valid boolean;
+BEGIN
+  SELECT bool_and(COALESCE(t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND t.tgtype=e.kind
+    AND p.proname=e.guard AND pn.nspname='public',false)) INTO valid
+  FROM (VALUES
+    ('recovery_backup_job','recovery_backup_job_keep_authority',19),
+    ('recovery_backup_authority_receipt','recovery_backup_authority_receipt_keep_result',27),
+    ('recovery_backup_cluster_binding','recovery_backup_cluster_keep_evidence',27),
+    ('recovery_backup_cluster_binding','recovery_backup_cluster_bind_manifest',7),
+    ('recovery_backup_cluster_member_publication','recovery_backup_cluster_keep_evidence',27),
+    ('recovery_backup_cluster_member_publication','recovery_backup_cluster_check_member',7),
+    ('recovery_backup_job','recovery_backup_cluster_gate_completion',23),
+    ('recovery_backup_publication_review','recovery_backup_publication_review_keep',27),
+    ('recovery_backup_publication_review','recovery_backup_publication_review_check',7),
+    ('recovery_backup_publication_attempt','recovery_backup_publication_attempt_keep',27),
+    ('recovery_backup_publication_attempt','recovery_backup_publication_attempt_check',7),
+    ('recovery_backup_publication_execution','recovery_backup_publication_execution_keep',27),
+    ('recovery_backup_publication_execution','recovery_backup_publication_execution_check',7),
+    ('recovery_backup_publication_drain','recovery_backup_publication_execution_keep',27),
+    ('recovery_backup_publication_drain','recovery_backup_publication_drain_check',7),
+    ('recovery_backup_cluster_member_publication','recovery_backup_publication_ack_gate',7),
+    ('recovery_backup_job','recovery_backup_publication_completion_gate',23),
+    ('recovery_backup_publication_closure','recovery_backup_publication_closure_keep',27),
+    ('recovery_backup_publication_closure','recovery_backup_publication_closure_check',7)) e(tab,guard,kind)
+  LEFT JOIN pg_namespace n ON n.nspname='public'
+  LEFT JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=e.tab
+  LEFT JOIN pg_trigger t ON t.tgrelid=c.oid AND t.tgname=e.guard
+  LEFT JOIN pg_proc p ON p.oid=t.tgfoid LEFT JOIN pg_namespace pn ON pn.oid=p.pronamespace;
+  IF valid IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
+  SELECT jsonb_build_object('job',to_jsonb(j)||jsonb_build_object('xmin',j.xmin::text),
+    'authority',to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text),
+    'receipt',to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text),
+    'binding',to_jsonb(b)||jsonb_build_object('xmin',b.xmin::text),
+    'review',to_jsonb(v)||jsonb_build_object('xmin',v.xmin::text),
+    'attempt',to_jsonb(x)||jsonb_build_object('xmin',x.xmin::text)) INTO snapshot
+  FROM public.recovery_backup_publication_attempt x
+  JOIN public.recovery_backup_publication_review v USING(review_id)
+  JOIN public.recovery_backup_job j ON j.id=x.job_id
+  JOIN public.recovery_backup_authority a ON a.resource_id=x.resource_id
+  JOIN public.recovery_backup_authority_receipt r ON r.resource_id=x.resource_id AND r.epoch=x.epoch
+  JOIN public.recovery_backup_cluster_binding b ON b.resource_id=x.resource_id AND b.epoch=x.epoch
+  WHERE NOT EXISTS(SELECT 1 FROM public.recovery_backup_publication_closure WHERE attempt_id=x.attempt_id)
+    AND x.attempt_id=attempt AND x.expires_at>clock_timestamp() AND x.review_sha256=v.review_sha256
+    AND j.authority_resource_id=x.resource_id AND j.authority_epoch=x.epoch AND j.authority_executor_id=x.executor_id
+    AND j.executor_controller=x.coordinator_controller AND j.database_key=encode(sha256(convert_to(x.resource_id,'UTF8')),'hex')
+    AND j.state='running' AND j.completed_at IS NULL AND j.format_version=1 AND j.detail->>'publicationState'='pending'
+    AND j.detail->>'publicationLockProtocol'='kernel-v1'
+    AND COALESCE(j.detail->>'cancellationState','')<>'unconfirmed' AND COALESCE(j.detail->>'phase','')<>'cleanup-unconfirmed'
+    AND j.artifact_id=x.artifact_id AND j.manifest_sha256=x.manifest_sha256
+    AND a.epoch=x.epoch AND a.job_id IS NULL AND a.executor_id IS NULL AND a.lease_until IS NULL
+    AND r.job_id=x.job_id AND r.executor_id=x.executor_id AND r.state='completed'
+    AND r.result->>'artifactId'=x.artifact_id AND r.result->>'manifestSha256'=x.manifest_sha256
+    AND b.job_id=x.job_id AND b.executor_id=x.executor_id AND b.artifact_id=x.artifact_id AND b.manifest_sha256=x.manifest_sha256
+    AND NOT EXISTS(SELECT 1 FROM public.recovery_backup_job_tombstone WHERE job_id=x.job_id);
+  IF snapshot IS NULL THEN RETURN NULL; END IF;
+  RETURN encode(sha256(convert_to(snapshot::text,'UTF8')),'hex');
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_closure_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE d jsonb; a public.recovery_backup_publication_attempt%ROWTYPE; snapshot jsonb; current_core text; evidence text; valid boolean; members jsonb;
+BEGIN
+  -- Same serialization boundary as a new execution claim. No helper/network work under these locks.
+  LOCK TABLE public.recovery_backup_publication_execution,public.recovery_backup_publication_drain,
+    public.recovery_backup_publication_attempt,public.recovery_backup_publication_review IN EXCLUSIVE MODE;
+  LOCK TABLE public.recovery_backup_publication_closure IN EXCLUSIVE MODE;
+  LOCK TABLE public.recovery_backup_job,public.recovery_backup_authority,public.recovery_backup_authority_receipt,
+    public.recovery_backup_cluster_binding,public.recovery_backup_cluster_member_publication,public.recovery_backup_job_tombstone IN SHARE MODE;
+  SELECT bool_and(COALESCE(t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND t.tgtype=e.kind
+    AND p.proname=e.guard AND pn.nspname='public',false)) INTO valid
+  FROM (VALUES
+    ('recovery_backup_job','recovery_backup_job_keep_authority',19),
+    ('recovery_backup_authority_receipt','recovery_backup_authority_receipt_keep_result',27),
+    ('recovery_backup_cluster_binding','recovery_backup_cluster_keep_evidence',27),
+    ('recovery_backup_cluster_binding','recovery_backup_cluster_bind_manifest',7),
+    ('recovery_backup_cluster_member_publication','recovery_backup_cluster_keep_evidence',27),
+    ('recovery_backup_cluster_member_publication','recovery_backup_cluster_check_member',7),
+    ('recovery_backup_job','recovery_backup_cluster_gate_completion',23),
+    ('recovery_backup_publication_review','recovery_backup_publication_review_keep',27),
+    ('recovery_backup_publication_review','recovery_backup_publication_review_check',7),
+    ('recovery_backup_publication_attempt','recovery_backup_publication_attempt_keep',27),
+    ('recovery_backup_publication_attempt','recovery_backup_publication_attempt_check',7),
+    ('recovery_backup_publication_execution','recovery_backup_publication_execution_keep',27),
+    ('recovery_backup_publication_execution','recovery_backup_publication_execution_check',7),
+    ('recovery_backup_publication_drain','recovery_backup_publication_execution_keep',27),
+    ('recovery_backup_publication_drain','recovery_backup_publication_drain_check',7),
+    ('recovery_backup_cluster_member_publication','recovery_backup_publication_ack_gate',7),
+    ('recovery_backup_job','recovery_backup_publication_completion_gate',23),
+    ('recovery_backup_publication_closure','recovery_backup_publication_closure_keep',27),
+    ('recovery_backup_publication_closure','recovery_backup_publication_closure_check',7)) e(tab,guard,kind)
+  LEFT JOIN pg_namespace n ON n.nspname='public'
+  LEFT JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=e.tab
+  LEFT JOIN pg_trigger t ON t.tgrelid=c.oid AND t.tgname=e.guard
+  LEFT JOIN pg_proc p ON p.oid=t.tgfoid LEFT JOIN pg_namespace pn ON pn.oid=p.pronamespace;
+  IF valid IS DISTINCT FROM TRUE THEN RAISE EXCEPTION 'closure guards unavailable'; END IF;
+
+  d:=NEW.closure_document::jsonb;
+  SELECT * INTO a FROM public.recovery_backup_publication_attempt WHERE attempt_id=NEW.attempt_id;
+  IF NOT FOUND OR EXISTS(SELECT 1 FROM public.recovery_backup_publication_closure WHERE attempt_id=NEW.attempt_id) THEN
+    RAISE EXCEPTION 'exact open attempt required'; END IF;
+  SELECT i.snapshot,i.current_core,i.evidence_sha256 INTO snapshot,current_core,evidence
+    FROM public.recovery_backup_publication_inspection(a.attempt_id,a.resource_id) i WHERE i.oversized=false;
+  IF snapshot IS NULL OR evidence<>NEW.inspection_sha256 OR
+    EXISTS(SELECT 1 FROM public.recovery_backup_publication_execution WHERE attempt_id=a.attempt_id AND component='parent') OR
+    NOT public.recovery_backup_publication_parent_ready(a.attempt_id) OR
+    snapshot->>'tombstone'<>'false' OR snapshot->'job'->>'state'<>'running' OR snapshot->'job'->'detail'->>'publicationState'<>'pending' OR
+    snapshot->'job'->'detail'->>'publicationLockProtocol'<>'kernel-v1' OR snapshot->'current'->>'epoch'<>a.epoch::text OR
+    snapshot->'current'->>'job_id' IS NOT NULL OR snapshot->'current'->>'executor_id' IS NOT NULL OR snapshot->'current'->>'lease_until' IS NOT NULL OR
+    COALESCE(snapshot->'job'->'detail'->>'cancellationState','')='unconfirmed' OR COALESCE(snapshot->'job'->'detail'->>'phase','')='cleanup-unconfirmed'
+    THEN RAISE EXCEPTION 'exact unchanged drained-member outcome required'; END IF;
+  members:=(snapshot->'binding'->>'manifest')::jsonb->'members';
+  IF jsonb_array_length(members) NOT BETWEEN 2 AND 32 OR
+    jsonb_array_length(snapshot->'executions')<>jsonb_array_length(members) OR
+    jsonb_array_length(snapshot->'drains')<>jsonb_array_length(members) OR
+    jsonb_array_length(snapshot->'acknowledgements')<>jsonb_array_length(members) OR
+    EXISTS(SELECT 1 FROM jsonb_array_elements(members) m(v) WHERE NOT EXISTS(
+      SELECT 1 FROM public.recovery_backup_publication_execution e
+      JOIN public.recovery_backup_publication_drain r USING(attempt_id,controller_id_sha256,component)
+      JOIN public.recovery_backup_cluster_member_publication k ON k.resource_id=a.resource_id AND k.epoch=a.epoch AND k.controller_id_sha256=e.controller_id_sha256
+      WHERE e.attempt_id=a.attempt_id AND e.component='member' AND e.controller_id_sha256=v->>'controllerIdSha256'
+        AND e.core_sha256=current_core AND r.request_id=e.request_id AND r.member_executor_id=e.member_executor_id AND r.helper_executor_id=e.helper_executor_id
+        AND r.exit_code=0 AND r.helper_pid>0 AND r.process_group_id=r.helper_pid AND r.drained_at>=e.started_at
+        AND r.result_document=jsonb_build_object('controllerIdSha256',v->>'controllerIdSha256','configManifestSha256',v->>'configManifestSha256','rttManifestSha256',v->>'rttManifestSha256')
+        AND k.config_manifest_sha256=v->>'configManifestSha256' AND k.rtt_manifest_sha256=v->>'rttManifestSha256'))
+    THEN RAISE EXCEPTION 'all exact member claims drains and acknowledgements required'; END IF;
+  IF (jsonb_typeof(d)='object' AND (SELECT count(*) FROM jsonb_object_keys(d))=18
+    AND d->>'schemaVersion'='1' AND d->>'kind'='uns-backup-publication-closure-review' AND d->>'action'='revoke-original-attempt'
+    AND d->>'closureId'=NEW.closure_id::text AND d->>'attemptId'=a.attempt_id::text
+    AND d->'authority'=jsonb_build_object('resourceId',a.resource_id,'jobId',a.job_id::text,'executorId',a.executor_id::text,'epoch',a.epoch::text)
+    AND d->>'artifactId'=a.artifact_id AND d->>'manifestSha256'=a.manifest_sha256 AND d->>'originalReviewSha256'=a.review_sha256
+    AND d->>'inspectionSha256'=evidence AND d->>'requestedBy'=NEW.requested_by AND btrim(NEW.requested_by)=NEW.requested_by
+    AND NEW.requested_by !~ E'[\r\n]'
+    AND d->>'verificationSha256' ~ '^[a-f0-9]{64}$'
+    AND d->>'coordinatorController'=a.coordinator_controller AND d->>'coordinatorExecutorId' ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+    AND d->>'coordinatorVersion' ~ '^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$'
+    AND split_part(d->>'coordinatorVersion','.',1)=split_part(a.coordinator_version,'.',1)
+    AND split_part(d->>'coordinatorVersion','.',2)=split_part(a.coordinator_version,'.',2)
+    AND (d->>'preparedAt')::timestamptz<=clock_timestamp() AND (d->>'expiresAt')::timestamptz=NEW.expires_at
+    AND NEW.expires_at=(d->>'preparedAt')::timestamptz+interval '60 seconds' AND NEW.expires_at>clock_timestamp()
+    AND encode(sha256(convert_to(NEW.closure_document,'UTF8')),'hex')=NEW.closure_sha256
+    AND jsonb_typeof(d->'members')='array' AND jsonb_array_length(d->'members')=jsonb_array_length(members)
+    AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(members) m(v) WHERE
+      (SELECT count(*) FROM jsonb_array_elements(d->'members') q(w) WHERE w->>'controllerIdSha256'=v->>'controllerIdSha256'
+        AND w->>'memberExecutorId' ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+        AND w->>'controllerVersion' ~ '^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$'
+        AND split_part(w->>'controllerVersion','.',1)=split_part(d->>'coordinatorVersion','.',1)
+        AND split_part(w->>'controllerVersion','.',2)=split_part(d->>'coordinatorVersion','.',2))<>1)) IS DISTINCT FROM TRUE
+    THEN RAISE EXCEPTION 'exact bounded closure review required'; END IF;
+  IF d - ARRAY['schemaVersion','kind','action','closureId','attemptId','authority','artifactId','manifestSha256','originalReviewSha256','inspectionSha256','verificationSha256',
+    'coordinatorController','coordinatorExecutorId','coordinatorVersion','requestedBy','preparedAt','expiresAt','members']<>'{}'::jsonb OR
+    EXISTS(SELECT 1 FROM jsonb_array_elements(d->'members') e(v) WHERE
+      jsonb_typeof(v)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(v))<>3 OR
+      v - ARRAY['controllerIdSha256','memberExecutorId','controllerVersion']<>'{}'::jsonb)
+    THEN RAISE EXCEPTION 'strict closure metadata required'; END IF;
+  NEW.closed_at:=clock_timestamp(); RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_publication_closure_check ON public.recovery_backup_publication_closure;
+CREATE TRIGGER recovery_backup_publication_closure_check BEFORE INSERT ON public.recovery_backup_publication_closure
+FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_publication_closure_check();
+
+-- R1-03c2b2a: linked admission and explicit reference reuse only. These tables
+-- grant no publication-helper execution rights and do not revive capture leases.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_successor_review (
+  review_id uuid PRIMARY KEY,
+  predecessor_attempt_id uuid UNIQUE NOT NULL REFERENCES public.recovery_backup_publication_attempt ON DELETE RESTRICT,
+  closure_id uuid UNIQUE NOT NULL REFERENCES public.recovery_backup_publication_closure(closure_id) ON DELETE RESTRICT,
+  job_id uuid NOT NULL REFERENCES public.recovery_backup_job(id) ON DELETE RESTRICT,
+  resource_id text NOT NULL, epoch bigint NOT NULL, executor_id uuid NOT NULL,
+  artifact_id text NOT NULL, manifest_sha256 text NOT NULL CHECK(manifest_sha256 ~ '^[a-f0-9]{64}$'),
+  inspection_sha256 text NOT NULL CHECK(inspection_sha256 ~ '^[a-f0-9]{64}$'),
+  review_document text NOT NULL CHECK(octet_length(review_document) BETWEEN 1 AND 65536),
+  review_sha256 text NOT NULL CHECK(review_sha256 ~ '^[a-f0-9]{64}$'),
+  requested_by text NOT NULL CHECK(length(requested_by) BETWEEN 1 AND 255),
+  recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(), expires_at timestamptz NOT NULL,
+  FOREIGN KEY(resource_id,epoch) REFERENCES public.recovery_backup_cluster_binding ON DELETE RESTRICT,
+  CHECK(artifact_id='cluster-recovery-set-'||job_id::text),
+  CHECK(encode(sha256(convert_to(review_document,'UTF8')),'hex')=review_sha256),
+  CHECK(expires_at>recorded_at AND expires_at<=recorded_at+interval '60 seconds')
+);
+-- The current bounded outcome admits one retained successor per original job.
+-- Index this lookup as well as enforcing it independently of INSERT guards.
+CREATE UNIQUE INDEX IF NOT EXISTS recovery_backup_successor_review_job_idx ON public.recovery_backup_successor_review(job_id);
+CREATE TABLE IF NOT EXISTS public.recovery_backup_successor_attempt (
+  attempt_id uuid PRIMARY KEY,
+  review_id uuid UNIQUE NOT NULL REFERENCES public.recovery_backup_successor_review ON DELETE RESTRICT,
+  predecessor_attempt_id uuid UNIQUE NOT NULL REFERENCES public.recovery_backup_publication_attempt ON DELETE RESTRICT,
+  review_sha256 text NOT NULL CHECK(review_sha256 ~ '^[a-f0-9]{64}$'),
+  requested_by text NOT NULL CHECK(length(requested_by) BETWEEN 1 AND 255),
+  reserved_at timestamptz NOT NULL DEFAULT clock_timestamp(), expires_at timestamptz NOT NULL,
+  CHECK(expires_at>reserved_at AND expires_at<=reserved_at+interval '60 seconds')
+);
+CREATE TABLE IF NOT EXISTS public.recovery_backup_successor_member_reuse (
+  attempt_id uuid NOT NULL REFERENCES public.recovery_backup_successor_attempt ON DELETE RESTRICT,
+  controller_id_sha256 text NOT NULL CHECK(controller_id_sha256 ~ '^[a-f0-9]{64}$'),
+  source_attempt_id uuid NOT NULL, source_component text NOT NULL DEFAULT 'member' CHECK(source_component='member'),
+  source_request_id uuid NOT NULL, source_member_executor_id uuid NOT NULL, source_helper_executor_id uuid NOT NULL,
+  resource_id text NOT NULL, epoch bigint NOT NULL,
+  source_drain_sha256 text NOT NULL CHECK(source_drain_sha256 ~ '^[a-f0-9]{64}$'),
+  source_ack_sha256 text NOT NULL CHECK(source_ack_sha256 ~ '^[a-f0-9]{64}$'),
+  recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY(attempt_id,controller_id_sha256),
+  FOREIGN KEY(source_attempt_id,controller_id_sha256,source_component) REFERENCES public.recovery_backup_publication_drain ON DELETE RESTRICT,
+  FOREIGN KEY(resource_id,epoch,controller_id_sha256) REFERENCES public.recovery_backup_cluster_member_publication ON DELETE RESTRICT
+);
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_guards_valid() RETURNS boolean LANGUAGE sql AS $$
+  SELECT bool_and(COALESCE(t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND t.tgtype=e.kind
+    AND p.proname=e.guard AND pn.nspname='public',false))
+  FROM (VALUES
+    ('recovery_backup_job','recovery_backup_job_keep_authority',19),
+    ('recovery_backup_authority_receipt','recovery_backup_authority_receipt_keep_result',27),
+    ('recovery_backup_cluster_binding','recovery_backup_cluster_keep_evidence',27),
+    ('recovery_backup_cluster_binding','recovery_backup_cluster_bind_manifest',7),
+    ('recovery_backup_cluster_member_publication','recovery_backup_cluster_keep_evidence',27),
+    ('recovery_backup_cluster_member_publication','recovery_backup_cluster_check_member',7),
+    ('recovery_backup_job','recovery_backup_cluster_gate_completion',23),
+    ('recovery_backup_publication_review','recovery_backup_publication_review_keep',27),
+    ('recovery_backup_publication_review','recovery_backup_publication_review_check',7),
+    ('recovery_backup_publication_attempt','recovery_backup_publication_attempt_keep',27),
+    ('recovery_backup_publication_attempt','recovery_backup_publication_attempt_check',7),
+    ('recovery_backup_publication_execution','recovery_backup_publication_execution_keep',27),
+    ('recovery_backup_publication_execution','recovery_backup_publication_execution_check',7),
+    ('recovery_backup_publication_drain','recovery_backup_publication_execution_keep',27),
+    ('recovery_backup_publication_drain','recovery_backup_publication_drain_check',7),
+    ('recovery_backup_cluster_member_publication','recovery_backup_publication_ack_gate',7),
+    ('recovery_backup_job','recovery_backup_publication_completion_gate',23),
+    ('recovery_backup_publication_closure','recovery_backup_publication_closure_keep',27),
+    ('recovery_backup_publication_closure','recovery_backup_publication_closure_check',7),
+    ('recovery_backup_successor_review','recovery_backup_successor_keep',27),
+    ('recovery_backup_successor_review','recovery_backup_successor_review_check',7),
+    ('recovery_backup_successor_review','recovery_backup_successor_complete',5),
+    ('recovery_backup_successor_attempt','recovery_backup_successor_keep',27),
+    ('recovery_backup_successor_attempt','recovery_backup_successor_attempt_check',7),
+    ('recovery_backup_successor_attempt','recovery_backup_successor_complete',5),
+    ('recovery_backup_successor_member_reuse','recovery_backup_successor_keep',27),
+    ('recovery_backup_successor_member_reuse','recovery_backup_successor_reuse_check',7)
+  ) e(tab,guard,kind)
+  LEFT JOIN pg_namespace n ON n.nspname='public' LEFT JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=e.tab
+  LEFT JOIN pg_trigger t ON t.tgrelid=c.oid AND t.tgname=e.guard LEFT JOIN pg_proc p ON p.oid=t.tgfoid
+  LEFT JOIN pg_namespace pn ON pn.oid=p.pronamespace;
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_lock() RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  -- Same order as existing execution/closure mutation; cover absent rows and DDL.
+  LOCK TABLE public.recovery_backup_publication_execution,public.recovery_backup_publication_drain,
+    public.recovery_backup_publication_attempt,public.recovery_backup_publication_review IN EXCLUSIVE MODE;
+  LOCK TABLE public.recovery_backup_job,public.recovery_backup_authority,public.recovery_backup_authority_receipt,
+    public.recovery_backup_cluster_binding,public.recovery_backup_cluster_member_publication,public.recovery_backup_job_tombstone IN SHARE MODE;
+  LOCK TABLE public.recovery_backup_publication_closure IN SHARE MODE;
+  LOCK TABLE public.recovery_backup_successor_review,public.recovery_backup_successor_attempt,
+    public.recovery_backup_successor_member_reuse IN EXCLUSIVE MODE;
+END;
+$$;
+
+-- Validates original closed evidence independently of controller checks. There
+-- is no execution-core or dispatch grant for any new successor attempt ID.
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_predecessor(attempt uuid, resource text, digest text)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE i record; s jsonb; a public.recovery_backup_publication_attempt%ROWTYPE;
+BEGIN
+  IF public.recovery_backup_successor_guards_valid() IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
+  SELECT * INTO a FROM public.recovery_backup_publication_attempt WHERE attempt_id=attempt AND resource_id=resource;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  SELECT * INTO i FROM public.recovery_backup_publication_inspection(attempt,resource);
+  s:=i.snapshot;
+  IF s IS NULL OR i.oversized IS DISTINCT FROM FALSE OR i.evidence_sha256 IS DISTINCT FROM digest
+    OR s->'closure'->>'attempt_id' IS DISTINCT FROM attempt::text
+    OR s->'closure'->>'inspection_sha256' IS DISTINCT FROM i.preclosure_evidence_sha256
+    OR encode(sha256(convert_to(s->'closure'->>'closure_document','UTF8')),'hex') IS DISTINCT FROM s->'closure'->>'closure_sha256'
+    OR s->>'tombstone' IS DISTINCT FROM 'false' OR s->'job'->>'state' IS DISTINCT FROM 'running'
+    OR s->'job'->'detail'->>'publicationState' IS DISTINCT FROM 'pending'
+    OR s->'job'->'detail'->>'publicationLockProtocol' IS DISTINCT FROM 'kernel-v1'
+    OR COALESCE(s->'job'->'detail'->>'cancellationState','')='unconfirmed'
+    OR COALESCE(s->'job'->'detail'->>'phase','')='cleanup-unconfirmed'
+    OR s->'current'->>'epoch' IS DISTINCT FROM a.epoch::text
+    OR s->'current'->>'job_id' IS NOT NULL OR s->'current'->>'executor_id' IS NOT NULL OR s->'current'->>'lease_until' IS NOT NULL
+    OR NOT public.recovery_backup_publication_parent_ready(attempt)
+    OR EXISTS(SELECT 1 FROM public.recovery_backup_publication_execution WHERE attempt_id=attempt AND component='parent')
+    OR EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt WHERE job_id=a.job_id AND attempt_id<>attempt)
+    OR EXISTS(SELECT 1 FROM public.recovery_backup_publication_review WHERE job_id=a.job_id AND review_id<>a.review_id AND expires_at>clock_timestamp())
+    OR EXISTS(SELECT 1 FROM public.recovery_backup_publication_execution WHERE attempt_id=attempt AND core_sha256 IS DISTINCT FROM i.current_core)
+    THEN RETURN NULL; END IF;
+  RETURN s;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_keep() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'successor admission and original evidence references are immutable'; END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_successor_keep ON public.recovery_backup_successor_review;
+CREATE TRIGGER recovery_backup_successor_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_successor_review FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_keep();
+DROP TRIGGER IF EXISTS recovery_backup_successor_keep ON public.recovery_backup_successor_attempt;
+CREATE TRIGGER recovery_backup_successor_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_successor_attempt FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_keep();
+DROP TRIGGER IF EXISTS recovery_backup_successor_keep ON public.recovery_backup_successor_member_reuse;
+CREATE TRIGGER recovery_backup_successor_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_successor_member_reuse FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_keep();
+
+-- Canonical component projection matches the server's fixed JSON field order.
+-- All strings below are validated names/UUIDs/UTC times without spaces; strip
+-- only JSON separator spaces, and sort by hexadecimal controller identity.
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_member_evidence(attempt uuid) RETURNS text LANGUAGE sql AS $$
+  SELECT encode(sha256(convert_to(replace(json_agg(json_build_object(
+    'controllerName',n.name,'component','member','state','DRAIN_CONFIRMED',
+    'requestId',e.request_id::text,'memberExecutorId',e.member_executor_id::text,'helperExecutorId',e.helper_executor_id::text,
+    'helperPid',d.helper_pid,'processGroupId',d.process_group_id,
+    'drainedAt',to_char(d.drained_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+    ORDER BY encode(sha256(convert_to(n.name,'UTF8')),'hex'))::text,' ',''),'UTF8')),'hex')
+  FROM public.recovery_backup_publication_attempt a JOIN public.recovery_backup_job j ON j.id=a.job_id
+  CROSS JOIN LATERAL jsonb_array_elements_text(j.detail->'frozenControllers') n(name)
+  JOIN public.recovery_backup_publication_execution e ON e.attempt_id=a.attempt_id AND e.component='member'
+    AND e.controller_id_sha256=encode(sha256(convert_to(n.name,'UTF8')),'hex')
+  JOIN public.recovery_backup_publication_drain d ON d.attempt_id=e.attempt_id AND d.controller_id_sha256=e.controller_id_sha256 AND d.component=e.component
+  WHERE a.attempt_id=attempt;
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_review_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE d jsonb:=NEW.review_document::jsonb; s jsonb; expected jsonb; supplied jsonb; coordinator jsonb;
+BEGIN
+  PERFORM public.recovery_backup_successor_lock();
+  s:=public.recovery_backup_successor_predecessor(NEW.predecessor_attempt_id,NEW.resource_id,NEW.inspection_sha256);
+  IF s IS NULL OR EXISTS(SELECT 1 FROM public.recovery_backup_successor_review WHERE job_id=NEW.job_id)
+    THEN RAISE EXCEPTION 'exact closed predecessor without another successor required'; END IF;
+  IF (d->>'schemaVersion'='1' AND d->>'kind'='uns-backup-publication-successor-review' AND d->>'action'='review-original-parent-after-closure'
+    AND d->>'reviewId'=NEW.review_id::text AND d->>'reviewId'<>s->'review'->>'review_id'
+    AND d->'authority'->>'resourceId'=NEW.resource_id AND d->'authority'->>'jobId'=NEW.job_id::text
+    AND d->'authority'->>'epoch'=NEW.epoch::text AND d->'authority'->>'executorId'=NEW.executor_id::text
+    AND NEW.job_id::text=s->'attempt'->>'job_id' AND NEW.epoch::text=s->'attempt'->>'epoch' AND NEW.executor_id::text=s->'attempt'->>'executor_id'
+    AND d->>'artifactId'=NEW.artifact_id AND d->>'manifestSha256'=NEW.manifest_sha256
+    AND NEW.artifact_id=s->'attempt'->>'artifact_id' AND NEW.manifest_sha256=s->'attempt'->>'manifest_sha256'
+    AND d->'predecessor'->>'attemptId'=NEW.predecessor_attempt_id::text AND d->'predecessor'->>'closureId'=NEW.closure_id::text
+    AND NEW.closure_id::text=s->'closure'->>'closure_id' AND d->'predecessor'->>'closureSha256'=s->'closure'->>'closure_sha256'
+    AND d->'predecessor'->>'inspectionSha256'=NEW.inspection_sha256 AND d->'predecessor'->>'reviewId'=s->'review'->>'review_id'
+    AND d->'predecessor'->>'reviewSha256'=s->'review'->>'review_sha256'
+    AND d->'predecessor'->>'retainedMemberEvidenceSha256'=public.recovery_backup_successor_member_evidence(NEW.predecessor_attempt_id)
+    AND d->>'requestedBy'=NEW.requested_by AND d->>'coordinatorController'=s->'attempt'->>'coordinator_controller'
+    AND d->>'verificationSha256' ~ '^[a-f0-9]{64}$' AND d->>'coordinatorExecutorId' ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+    AND d->>'coordinatorVersion' ~ '^(2\.(2|[3-9]|[1-9][0-9]+)|([3-9]|[1-9][0-9]+)\.(0|[1-9][0-9]*))\.(0|[1-9][0-9]*)$'
+    AND (d->>'expiresAt')::timestamptz=NEW.expires_at AND NEW.expires_at>clock_timestamp()
+    AND d->>'preparedAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+    AND d->>'expiresAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+    AND (d->>'expiresAt')::timestamptz=(d->>'preparedAt')::timestamptz+interval '60 seconds'
+    AND (d->>'preparedAt')::timestamptz<=clock_timestamp()+interval '5 seconds') IS DISTINCT FROM TRUE
+    THEN RAISE EXCEPTION 'successor review tuple or lifetime changed'; END IF;
+  IF jsonb_typeof(d)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(d))<>16
+    OR d - ARRAY['schemaVersion','kind','action','reviewId','authority','artifactId','manifestSha256','predecessor','coordinatorController',
+      'coordinatorExecutorId','coordinatorVersion','requestedBy','verificationSha256','preparedAt','expiresAt','members']<>'{}'::jsonb
+    OR jsonb_typeof(d->'authority')<>'object' OR (SELECT count(*) FROM jsonb_object_keys(d->'authority'))<>4
+    OR (d->'authority') - ARRAY['resourceId','jobId','executorId','epoch']<>'{}'::jsonb
+    OR jsonb_typeof(d->'predecessor')<>'object' OR (SELECT count(*) FROM jsonb_object_keys(d->'predecessor'))<>7
+    OR (d->'predecessor') - ARRAY['attemptId','reviewId','reviewSha256','closureId','closureSha256','inspectionSha256','retainedMemberEvidenceSha256']<>'{}'::jsonb
+    OR NEW.requested_by<>btrim(NEW.requested_by) OR NEW.requested_by ~ E'[\\r\\n]' OR NEW.requested_by ~ '^[[:space:]]|[[:space:]]$'
+    OR jsonb_typeof(d->'members')<>'array' OR jsonb_array_length(d->'members') NOT BETWEEN 2 AND 32
+    THEN RAISE EXCEPTION 'strict bounded successor metadata required'; END IF;
+  IF EXISTS(SELECT 1 FROM jsonb_array_elements(d->'members') m(v) WHERE
+    (jsonb_typeof(v)='object' AND (SELECT count(*) FROM jsonb_object_keys(v))=3
+      AND v - ARRAY['controllerIdSha256','memberExecutorId','controllerVersion']='{}'::jsonb
+      AND v->>'controllerIdSha256' ~ '^[a-f0-9]{64}$'
+      AND v->>'memberExecutorId' ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+      AND v->>'controllerVersion' ~ '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+      AND split_part(v->>'controllerVersion','.',1)=split_part(d->>'coordinatorVersion','.',1)
+      AND split_part(v->>'controllerVersion','.',2)=split_part(d->>'coordinatorVersion','.',2)) IS DISTINCT FROM TRUE)
+    THEN RAISE EXCEPTION 'successor process bindings invalid'; END IF;
+  expected:=(s->'binding'->>'manifest')::jsonb->'expectedControllerIdsSha256';
+  SELECT jsonb_agg(v->>'controllerIdSha256' ORDER BY n) INTO supplied FROM jsonb_array_elements(d->'members') WITH ORDINALITY m(v,n);
+  SELECT v INTO coordinator FROM jsonb_array_elements(d->'members') m(v)
+    WHERE v->>'controllerIdSha256'=encode(sha256(convert_to(d->>'coordinatorController','UTF8')),'hex');
+  IF supplied IS DISTINCT FROM expected OR coordinator->>'memberExecutorId' IS DISTINCT FROM d->>'coordinatorExecutorId'
+    OR coordinator->>'controllerVersion' IS DISTINCT FROM d->>'coordinatorVersion'
+    THEN RAISE EXCEPTION 'successor membership or coordinator changed'; END IF;
+  NEW.recorded_at:=clock_timestamp(); RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_successor_review_check ON public.recovery_backup_successor_review;
+CREATE TRIGGER recovery_backup_successor_review_check BEFORE INSERT ON public.recovery_backup_successor_review FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_review_check();
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_attempt_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE r public.recovery_backup_successor_review%ROWTYPE;
+BEGIN
+  PERFORM public.recovery_backup_successor_lock();
+  SELECT * INTO r FROM public.recovery_backup_successor_review WHERE review_id=NEW.review_id;
+  IF NOT FOUND OR (NEW.predecessor_attempt_id=r.predecessor_attempt_id AND NEW.review_sha256=r.review_sha256
+    AND NEW.requested_by=r.requested_by AND NEW.expires_at=r.expires_at AND NEW.attempt_id<>r.predecessor_attempt_id
+    AND NEW.expires_at>clock_timestamp()) IS DISTINCT FROM TRUE
+    OR EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt WHERE attempt_id=NEW.attempt_id)
+    OR public.recovery_backup_successor_predecessor(r.predecessor_attempt_id,r.resource_id,r.inspection_sha256) IS NULL
+    THEN RAISE EXCEPTION 'fresh exact successor reservation required'; END IF;
+  NEW.reserved_at:=clock_timestamp(); RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_successor_attempt_check ON public.recovery_backup_successor_attempt;
+CREATE TRIGGER recovery_backup_successor_attempt_check BEFORE INSERT ON public.recovery_backup_successor_attempt FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_attempt_check();
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_reuse_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE r public.recovery_backup_successor_review%ROWTYPE; a public.recovery_backup_successor_attempt%ROWTYPE; valid boolean;
+BEGIN
+  PERFORM public.recovery_backup_successor_lock();
+  SELECT * INTO a FROM public.recovery_backup_successor_attempt WHERE attempt_id=NEW.attempt_id;
+  SELECT * INTO r FROM public.recovery_backup_successor_review WHERE review_id=a.review_id;
+  IF a.attempt_id IS NULL OR NEW.source_attempt_id IS DISTINCT FROM r.predecessor_attempt_id
+    OR NEW.resource_id IS DISTINCT FROM r.resource_id OR NEW.epoch IS DISTINCT FROM r.epoch
+    OR a.expires_at<=clock_timestamp()
+    OR public.recovery_backup_successor_predecessor(r.predecessor_attempt_id,r.resource_id,r.inspection_sha256) IS NULL
+    THEN RAISE EXCEPTION 'unchanged admitted predecessor required for member reuse'; END IF;
+  SELECT EXISTS(SELECT 1 FROM public.recovery_backup_publication_drain d
+    JOIN public.recovery_backup_publication_execution e USING(attempt_id,controller_id_sha256,component)
+    JOIN public.recovery_backup_cluster_member_publication k ON k.resource_id=r.resource_id AND k.epoch=r.epoch AND k.controller_id_sha256=d.controller_id_sha256
+    WHERE d.attempt_id=NEW.source_attempt_id AND d.component='member' AND d.controller_id_sha256=NEW.controller_id_sha256
+      AND d.request_id=NEW.source_request_id AND d.member_executor_id=NEW.source_member_executor_id AND d.helper_executor_id=NEW.source_helper_executor_id
+      AND e.request_id=d.request_id AND e.member_executor_id=d.member_executor_id AND e.helper_executor_id=d.helper_executor_id
+      AND d.exit_code=0 AND d.helper_pid>0 AND d.process_group_id=d.helper_pid
+      AND d.result_document->>'configManifestSha256'=k.config_manifest_sha256 AND d.result_document->>'rttManifestSha256'=k.rtt_manifest_sha256
+      AND d.result_document->>'controllerIdSha256'=k.controller_id_sha256
+      AND encode(sha256(convert_to((to_jsonb(d)||jsonb_build_object('xmin',d.xmin::text))::text,'UTF8')),'hex')=NEW.source_drain_sha256
+      AND encode(sha256(convert_to((to_jsonb(k)||jsonb_build_object('xmin',k.xmin::text))::text,'UTF8')),'hex')=NEW.source_ack_sha256
+  ) INTO valid;
+  IF valid IS DISTINCT FROM TRUE THEN RAISE EXCEPTION 'exact original drain and acknowledgement required'; END IF;
+  NEW.recorded_at:=clock_timestamp(); RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_successor_reuse_check ON public.recovery_backup_successor_member_reuse;
+CREATE TRIGGER recovery_backup_successor_reuse_check BEFORE INSERT ON public.recovery_backup_successor_member_reuse FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_reuse_check();
+
+-- Prevent raw partial admission from committing: the review, reservation and
+-- every reference must be present in the same transaction, without false drains.
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_complete() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE r public.recovery_backup_successor_review%ROWTYPE; a public.recovery_backup_successor_attempt%ROWTYPE; expected jsonb; supplied jsonb;
+BEGIN
+  PERFORM public.recovery_backup_successor_lock();
+  SELECT * INTO r FROM public.recovery_backup_successor_review WHERE review_id=NEW.review_id;
+  SELECT * INTO a FROM public.recovery_backup_successor_attempt WHERE review_id=NEW.review_id;
+  IF r.review_id IS NULL OR a.attempt_id IS NULL OR a.expires_at<=clock_timestamp()
+    OR public.recovery_backup_successor_predecessor(r.predecessor_attempt_id,r.resource_id,r.inspection_sha256) IS NULL
+    THEN RAISE EXCEPTION 'complete atomic successor admission required'; END IF;
+  SELECT jsonb_agg(v->>'controllerIdSha256' ORDER BY v->>'controllerIdSha256') INTO expected
+    FROM jsonb_array_elements(r.review_document::jsonb->'members') m(v);
+  SELECT jsonb_agg(controller_id_sha256 ORDER BY controller_id_sha256) INTO supplied
+    FROM public.recovery_backup_successor_member_reuse WHERE attempt_id=a.attempt_id;
+  IF supplied IS DISTINCT FROM expected THEN RAISE EXCEPTION 'all exact original member references required'; END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_successor_complete ON public.recovery_backup_successor_review;
+CREATE CONSTRAINT TRIGGER recovery_backup_successor_complete AFTER INSERT ON public.recovery_backup_successor_review
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_complete();
+DROP TRIGGER IF EXISTS recovery_backup_successor_complete ON public.recovery_backup_successor_attempt;
+CREATE CONSTRAINT TRIGGER recovery_backup_successor_complete AFTER INSERT ON public.recovery_backup_successor_attempt
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_complete();
+
+-- Parent-only continuation of an exactly closed original publication attempt.
+-- Member provenance stays in the original immutable ledger, never copied as new drains.
+CREATE TABLE IF NOT EXISTS public.recovery_backup_successor_execution (
+  attempt_id uuid PRIMARY KEY REFERENCES public.recovery_backup_successor_attempt ON DELETE RESTRICT,
+  request_id uuid UNIQUE NOT NULL, member_executor_id uuid NOT NULL, helper_executor_id uuid NOT NULL,
+  core_sha256 text NOT NULL CHECK(core_sha256 ~ '^[a-f0-9]{64}$'),
+  predecessor_snapshot jsonb NOT NULL CHECK(octet_length(predecessor_snapshot::text)<=1048576),
+  started_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TABLE IF NOT EXISTS public.recovery_backup_successor_drain (
+  attempt_id uuid PRIMARY KEY REFERENCES public.recovery_backup_successor_execution ON DELETE RESTRICT,
+  request_id uuid NOT NULL, member_executor_id uuid NOT NULL, helper_executor_id uuid NOT NULL,
+  helper_pid integer NOT NULL CHECK(helper_pid>0), process_group_id integer NOT NULL CHECK(process_group_id=helper_pid),
+  exit_code integer NOT NULL CHECK(exit_code=0), result_document jsonb NOT NULL CHECK(octet_length(result_document::text)<=2048),
+  drained_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TABLE IF NOT EXISTS public.recovery_backup_successor_completion (
+  attempt_id uuid PRIMARY KEY REFERENCES public.recovery_backup_successor_drain ON DELETE RESTRICT,
+  job_document jsonb NOT NULL CHECK(octet_length(job_document::text)<=65536),
+  recorded_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_execution_guards_valid() RETURNS boolean LANGUAGE sql AS $$
+ SELECT public.recovery_backup_successor_guards_valid() AND bool_and(COALESCE(t.tgenabled IN ('O','A') AND NOT t.tgisinternal
+   AND t.tgtype=e.kind AND p.proname=e.guard AND pn.nspname='public',false))
+ FROM (VALUES
+ ('recovery_backup_successor_execution','recovery_backup_successor_keep',27),
+ ('recovery_backup_successor_execution','recovery_backup_successor_execution_check',7),
+ ('recovery_backup_successor_drain','recovery_backup_successor_keep',27),
+ ('recovery_backup_successor_drain','recovery_backup_successor_drain_check',7),
+ ('recovery_backup_successor_drain','recovery_backup_successor_completion_required',5),
+ ('recovery_backup_successor_completion','recovery_backup_successor_keep',27),
+ ('recovery_backup_successor_completion','recovery_backup_successor_completion_check',7)) e(tab,guard,kind)
+ LEFT JOIN pg_namespace n ON n.nspname='public' LEFT JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=e.tab
+ LEFT JOIN pg_trigger t ON t.tgrelid=c.oid AND t.tgname=e.guard LEFT JOIN pg_proc p ON p.oid=t.tgfoid
+ LEFT JOIN pg_namespace pn ON pn.oid=p.pronamespace;
+$$;
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_execution_lock() RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+ PERFORM public.recovery_backup_successor_lock();
+ LOCK TABLE public.recovery_backup_successor_execution,public.recovery_backup_successor_drain,public.recovery_backup_successor_completion IN EXCLUSIVE MODE;
+END;
+$$;
+
+-- Reconstruct the immutable admission fingerprint also after job completion.
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_retained_core(attempt uuid, predecessor jsonb) RETURNS text LANGUAGE sql AS $$
+ SELECT encode(sha256(convert_to(jsonb_build_object('predecessor',$2,'review',to_jsonb(r)||jsonb_build_object('xmin',r.xmin::text),
+  'attempt',to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text),'reuse',
+  (SELECT jsonb_agg(to_jsonb(v)||jsonb_build_object('xmin',v.xmin::text) ORDER BY v.controller_id_sha256)
+    FROM public.recovery_backup_successor_member_reuse v WHERE v.attempt_id=$1))::text,'UTF8')),'hex')
+ FROM public.recovery_backup_successor_attempt a JOIN public.recovery_backup_successor_review r USING(review_id) WHERE a.attempt_id=$1;
+$$;
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_execution_core(attempt uuid) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r public.recovery_backup_successor_review%ROWTYPE; s jsonb; refs jsonb; actual jsonb; core jsonb;
+BEGIN
+ IF public.recovery_backup_successor_execution_guards_valid() IS DISTINCT FROM TRUE THEN RETURN NULL; END IF;
+ SELECT v.* INTO r FROM public.recovery_backup_successor_attempt a JOIN public.recovery_backup_successor_review v USING(review_id)
+ WHERE a.attempt_id=attempt AND a.expires_at>clock_timestamp() AND a.review_sha256=v.review_sha256;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ s:=public.recovery_backup_successor_predecessor(r.predecessor_attempt_id,r.resource_id,r.inspection_sha256);
+ IF s IS NULL THEN RETURN NULL; END IF;
+ SELECT jsonb_agg(to_jsonb(v)||jsonb_build_object('xmin',v.xmin::text) ORDER BY v.controller_id_sha256) INTO refs
+ FROM public.recovery_backup_successor_member_reuse v WHERE v.attempt_id=attempt;
+ SELECT jsonb_agg(v.controller_id_sha256 ORDER BY v.controller_id_sha256) INTO actual
+ FROM public.recovery_backup_successor_member_reuse v WHERE v.attempt_id=attempt;
+ IF actual IS DISTINCT FROM (SELECT jsonb_agg(m.v->>'controllerIdSha256' ORDER BY m.v->>'controllerIdSha256')
+   FROM jsonb_array_elements(r.review_document::jsonb->'members') m(v)) OR EXISTS(
+  SELECT 1 FROM public.recovery_backup_successor_member_reuse v
+  LEFT JOIN public.recovery_backup_publication_drain d ON d.attempt_id=v.source_attempt_id AND d.controller_id_sha256=v.controller_id_sha256 AND d.component='member'
+  LEFT JOIN public.recovery_backup_cluster_member_publication k ON k.resource_id=v.resource_id AND k.epoch=v.epoch AND k.controller_id_sha256=v.controller_id_sha256
+  WHERE v.attempt_id=attempt AND (v.source_attempt_id=r.predecessor_attempt_id AND v.source_request_id=d.request_id
+    AND v.source_member_executor_id=d.member_executor_id AND v.source_helper_executor_id=d.helper_executor_id
+    AND v.resource_id=r.resource_id AND v.epoch=r.epoch
+    AND v.source_drain_sha256=encode(sha256(convert_to((to_jsonb(d)||jsonb_build_object('xmin',d.xmin::text))::text,'UTF8')),'hex')
+    AND v.source_ack_sha256=encode(sha256(convert_to((to_jsonb(k)||jsonb_build_object('xmin',k.xmin::text))::text,'UTF8')),'hex')) IS DISTINCT FROM TRUE)
+ THEN RETURN NULL; END IF;
+ SELECT jsonb_build_object('predecessor',s,'review',to_jsonb(v)||jsonb_build_object('xmin',v.xmin::text),
+   'attempt',to_jsonb(a)||jsonb_build_object('xmin',a.xmin::text),'reuse',refs) INTO core
+ FROM public.recovery_backup_successor_attempt a JOIN public.recovery_backup_successor_review v USING(review_id) WHERE a.attempt_id=attempt;
+ RETURN encode(sha256(convert_to(core::text,'UTF8')),'hex');
+END;
+$$;
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_execution_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE r public.recovery_backup_successor_review%ROWTYPE; current_core text;
+BEGIN
+ PERFORM public.recovery_backup_successor_execution_lock();
+ current_core:=public.recovery_backup_successor_execution_core(NEW.attempt_id);
+ SELECT v.* INTO r FROM public.recovery_backup_successor_attempt a JOIN public.recovery_backup_successor_review v USING(review_id) WHERE a.attempt_id=NEW.attempt_id;
+ IF current_core IS NULL OR NEW.core_sha256 IS DISTINCT FROM current_core OR
+   NEW.member_executor_id::text IS DISTINCT FROM r.review_document::jsonb->>'coordinatorExecutorId' THEN RAISE EXCEPTION 'exact successor parent claim required'; END IF;
+ NEW.predecessor_snapshot:=public.recovery_backup_successor_predecessor(r.predecessor_attempt_id,r.resource_id,r.inspection_sha256);
+ NEW.started_at:=clock_timestamp(); RETURN NEW;
+END;
+$$;
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_execution_authorized(
+ attempt uuid, request uuid, worker uuid, helper uuid, controller_hash text, part text,
+ resource text, job uuid, executor uuid, expected_epoch bigint, artifact text, digest text, review_digest text,
+ coordinator_worker uuid, coordinator text, coordinator_version text, member_version text)
+RETURNS boolean LANGUAGE sql AS $$
+ SELECT EXISTS(SELECT 1 FROM public.recovery_backup_successor_execution e
+ JOIN public.recovery_backup_successor_attempt a USING(attempt_id) JOIN public.recovery_backup_successor_review r USING(review_id)
+ WHERE e.attempt_id=$1 AND e.request_id=$2 AND e.member_executor_id=$3 AND e.helper_executor_id=$4 AND $6='parent'
+   AND r.resource_id=$7 AND r.job_id=$8 AND r.executor_id=$9 AND r.epoch=$10 AND r.artifact_id=$11 AND r.manifest_sha256=$12
+   AND r.review_sha256=$13 AND $3=$14 AND r.review_document::jsonb->>'coordinatorExecutorId'=$14::text
+   AND r.review_document::jsonb->>'coordinatorController'=$15 AND r.review_document::jsonb->>'coordinatorVersion'=$16
+   AND $16=$17 AND $5=encode(sha256(convert_to($15,'UTF8')),'hex')
+   AND e.core_sha256=public.recovery_backup_successor_execution_core(e.attempt_id)
+   AND NOT EXISTS(SELECT 1 FROM public.recovery_backup_successor_drain WHERE attempt_id=e.attempt_id));
+$$;
+-- Existing v4 helper repeats this exact direct-DB authorization around each rename.
+-- New attempt IDs remain rejected by the original execution-core/claim machinery.
+CREATE OR REPLACE FUNCTION public.recovery_backup_original_execution_authorized(
+  attempt uuid, request uuid, worker uuid, helper uuid, controller_hash text, part text,
+  resource text, job uuid, executor uuid, expected_epoch bigint, artifact text, digest text, review_digest text,
+  coordinator_worker uuid, coordinator text, coordinator_version text, member_version text)
+RETURNS boolean LANGUAGE sql AS $$
+  SELECT EXISTS(SELECT 1 FROM public.recovery_backup_publication_execution e
+    JOIN public.recovery_backup_publication_attempt a USING(attempt_id)
+    JOIN public.recovery_backup_publication_review r USING(review_id)
+    WHERE a.attempt_id=$1 AND e.request_id=$2 AND e.member_executor_id=$3 AND e.helper_executor_id=$4
+      AND e.controller_id_sha256=$5 AND e.component=$6 AND a.resource_id=$7 AND a.job_id=$8
+      AND a.executor_id=$9 AND a.epoch=$10 AND a.artifact_id=$11 AND a.manifest_sha256=$12
+      AND a.review_sha256=$13 AND a.coordinator_executor_id=$14
+      AND a.coordinator_controller=$15 AND a.coordinator_version=$16
+      AND e.core_sha256=public.recovery_backup_publication_execution_core(a.attempt_id)
+      AND EXISTS(SELECT 1 FROM jsonb_array_elements(r.review_document::jsonb->'members') m(v)
+        WHERE v->>'controllerIdSha256'=$5 AND v->>'memberExecutorId'=$3::text AND v->>'controllerVersion'=$17)
+      AND NOT EXISTS(SELECT 1 FROM public.recovery_backup_publication_drain d
+        WHERE d.attempt_id=e.attempt_id AND d.controller_id_sha256=e.controller_id_sha256 AND d.component=e.component)
+      AND ($6='member' OR public.recovery_backup_publication_parent_ready(a.attempt_id)));
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_execution_authorized(
+ attempt uuid, request uuid, worker uuid, helper uuid, controller_hash text, part text,
+ resource text, job uuid, executor uuid, expected_epoch bigint, artifact text, digest text, review_digest text,
+ coordinator_worker uuid, coordinator text, coordinator_version text, member_version text)
+RETURNS boolean LANGUAGE sql AS $$
+ SELECT public.recovery_backup_original_execution_authorized($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+ OR public.recovery_backup_successor_execution_authorized($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17);
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_drain_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE e public.recovery_backup_successor_execution%ROWTYPE; r public.recovery_backup_successor_review%ROWTYPE;
+BEGIN
+ PERFORM public.recovery_backup_successor_execution_lock();
+ SELECT * INTO e FROM public.recovery_backup_successor_execution WHERE attempt_id=NEW.attempt_id;
+ SELECT v.* INTO r FROM public.recovery_backup_successor_attempt a JOIN public.recovery_backup_successor_review v USING(review_id) WHERE a.attempt_id=NEW.attempt_id;
+ IF (e.core_sha256=public.recovery_backup_successor_execution_core(NEW.attempt_id)
+   AND e.request_id=NEW.request_id AND e.member_executor_id=NEW.member_executor_id AND e.helper_executor_id=NEW.helper_executor_id
+   AND NEW.result_document=jsonb_build_object('id',r.artifact_id,'formatVersion',1,'manifestSha256',r.manifest_sha256)) IS DISTINCT FROM TRUE
+ THEN RAISE EXCEPTION 'exact successful successor parent drain required'; END IF;
+ NEW.drained_at:=clock_timestamp(); RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_publication_completion_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE r public.recovery_backup_successor_review%ROWTYPE;
+BEGIN
+ IF NEW.state='completed' AND EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt WHERE job_id=NEW.id)
+   AND NOT EXISTS(SELECT 1 FROM public.recovery_backup_publication_attempt a JOIN public.recovery_backup_publication_drain d USING(attempt_id)
+     WHERE a.job_id=NEW.id AND d.component='parent') THEN
+   SELECT * INTO r FROM public.recovery_backup_successor_review WHERE job_id=NEW.id;
+   IF NOT FOUND OR TG_OP<>'UPDATE' OR NOT EXISTS(SELECT 1 FROM public.recovery_backup_successor_attempt a
+     JOIN public.recovery_backup_successor_execution e USING(attempt_id) JOIN public.recovery_backup_successor_drain d USING(attempt_id)
+     WHERE a.review_id=r.review_id AND e.core_sha256=public.recovery_backup_successor_execution_core(a.attempt_id))
+     OR NEW.completed_at IS NULL OR NEW.updated_at IS DISTINCT FROM NEW.completed_at
+     OR (to_jsonb(NEW)-ARRAY['state','completed_at','updated_at','detail']) IS DISTINCT FROM (to_jsonb(OLD)-ARRAY['state','completed_at','updated_at','detail'])
+     OR NEW.detail IS DISTINCT FROM ((OLD.detail-'reasonCode')||'{"phase":"completed","publicationState":"published"}'::jsonb)
+   THEN RAISE EXCEPTION 'reviewed completion requires exact successful parent helper drain'; END IF;
+ END IF;
+ RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_completion_valid(attempt uuid) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE e public.recovery_backup_successor_execution%ROWTYPE; r public.recovery_backup_successor_review%ROWTYPE;
+  current_snapshot jsonb; recorded_job jsonb; before_job jsonb; current_job jsonb;
+BEGIN
+ IF public.recovery_backup_successor_execution_guards_valid() IS DISTINCT FROM TRUE THEN RETURN FALSE; END IF;
+ SELECT * INTO e FROM public.recovery_backup_successor_execution WHERE attempt_id=attempt;
+ SELECT v.* INTO r FROM public.recovery_backup_successor_attempt a JOIN public.recovery_backup_successor_review v USING(review_id) WHERE a.attempt_id=attempt;
+ SELECT job_document INTO recorded_job FROM public.recovery_backup_successor_completion WHERE attempt_id=attempt;
+ SELECT snapshot INTO current_snapshot FROM public.recovery_backup_publication_inspection(r.predecessor_attempt_id,r.resource_id) WHERE oversized=false;
+ current_job:=current_snapshot->'job'; before_job:=e.predecessor_snapshot->'job';
+ RETURN (e.predecessor_snapshot IS NOT NULL AND recorded_job IS NOT NULL
+  AND encode(sha256(convert_to(e.predecessor_snapshot::text,'UTF8')),'hex')=r.inspection_sha256
+  AND e.core_sha256=public.recovery_backup_successor_retained_core(attempt,e.predecessor_snapshot)
+  AND e.member_executor_id::text=r.review_document::jsonb->>'coordinatorExecutorId'
+  AND (current_snapshot-'job')=(e.predecessor_snapshot-'job')
+  AND current_job=recorded_job AND current_job->>'state'='completed' AND current_job->>'completed_at' IS NOT NULL
+  AND current_job->>'updated_at'=current_job->>'completed_at'
+  AND (current_job-ARRAY['xmin','state','completed_at','updated_at','detail'])=(before_job-ARRAY['xmin','state','completed_at','updated_at','detail'])
+  AND current_job->'detail'=(((before_job->'detail')-'reasonCode')||'{"phase":"completed","publicationState":"published"}'::jsonb)
+  AND EXISTS(SELECT 1 FROM public.recovery_backup_successor_drain d WHERE d.attempt_id=attempt
+    AND d.request_id=e.request_id AND d.member_executor_id=e.member_executor_id AND d.helper_executor_id=e.helper_executor_id
+    AND d.result_document=jsonb_build_object('id',r.artifact_id,'formatVersion',1,'manifestSha256',r.manifest_sha256))) IS TRUE;
+END;
+$$;
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_completion_check() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE r public.recovery_backup_successor_review%ROWTYPE; current_job jsonb;
+BEGIN
+ PERFORM public.recovery_backup_successor_execution_lock();
+ SELECT v.* INTO r FROM public.recovery_backup_successor_attempt a JOIN public.recovery_backup_successor_review v USING(review_id) WHERE a.attempt_id=NEW.attempt_id;
+ SELECT snapshot->'job' INTO current_job FROM public.recovery_backup_publication_inspection(r.predecessor_attempt_id,r.resource_id) WHERE oversized=false;
+ IF NEW.job_document IS DISTINCT FROM current_job OR current_job->>'state' IS DISTINCT FROM 'completed' THEN RAISE EXCEPTION 'exact completed successor job evidence required'; END IF;
+ NEW.recorded_at:=clock_timestamp(); RETURN NEW;
+END;
+$$;
+CREATE OR REPLACE FUNCTION public.recovery_backup_successor_completion_required() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ PERFORM public.recovery_backup_successor_execution_lock();
+ IF public.recovery_backup_successor_completion_valid(NEW.attempt_id) IS DISTINCT FROM TRUE THEN RAISE EXCEPTION 'successor drain, job and completion must commit together'; END IF;
+ RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS recovery_backup_successor_keep ON public.recovery_backup_successor_execution;
+CREATE TRIGGER recovery_backup_successor_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_successor_execution FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_keep();
+DROP TRIGGER IF EXISTS recovery_backup_successor_execution_check ON public.recovery_backup_successor_execution;
+CREATE TRIGGER recovery_backup_successor_execution_check BEFORE INSERT ON public.recovery_backup_successor_execution FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_execution_check();
+DROP TRIGGER IF EXISTS recovery_backup_successor_keep ON public.recovery_backup_successor_drain;
+CREATE TRIGGER recovery_backup_successor_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_successor_drain FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_keep();
+DROP TRIGGER IF EXISTS recovery_backup_successor_drain_check ON public.recovery_backup_successor_drain;
+CREATE TRIGGER recovery_backup_successor_drain_check BEFORE INSERT ON public.recovery_backup_successor_drain FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_drain_check();
+DROP TRIGGER IF EXISTS recovery_backup_successor_completion_required ON public.recovery_backup_successor_drain;
+CREATE CONSTRAINT TRIGGER recovery_backup_successor_completion_required AFTER INSERT ON public.recovery_backup_successor_drain DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_completion_required();
+DROP TRIGGER IF EXISTS recovery_backup_successor_keep ON public.recovery_backup_successor_completion;
+CREATE TRIGGER recovery_backup_successor_keep BEFORE UPDATE OR DELETE ON public.recovery_backup_successor_completion FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_keep();
+DROP TRIGGER IF EXISTS recovery_backup_successor_completion_check ON public.recovery_backup_successor_completion;
+CREATE TRIGGER recovery_backup_successor_completion_check BEFORE INSERT ON public.recovery_backup_successor_completion FOR EACH ROW EXECUTE FUNCTION public.recovery_backup_successor_completion_check();
