@@ -7665,3 +7665,135 @@ INSERT INTO public.relationship_operation_review_fence (operation_id, outcome)
 -- Stable bounded keyset pages of producer operations for one material anchor.
 CREATE INDEX IF NOT EXISTS relationship_operation_manifest_selection_idx
   ON public.relationship_operation_manifest (kind, anchor_full_topic, created_at DESC, operation_id DESC);
+
+-- Additive observer-scoped service journal. No runtime payloads or diagnostic text.
+CREATE TABLE IF NOT EXISTS public.system_service_incident_observers (
+  controller_name varchar(200) PRIMARY KEY,
+  token uuid NOT NULL,
+  started_at timestamptz NOT NULL,
+  checked_at timestamptz
+);
+CREATE TABLE IF NOT EXISTS public.system_service_incident_states (
+  controller_name varchar(200) NOT NULL REFERENCES public.system_service_incident_observers(controller_name),
+  service_id varchar(100) NOT NULL,
+  record jsonb NOT NULL,
+  PRIMARY KEY (controller_name, service_id)
+);
+CREATE TABLE IF NOT EXISTS public.system_service_incidents (
+  id uuid PRIMARY KEY,
+  controller_name varchar(200) NOT NULL REFERENCES public.system_service_incident_observers(controller_name),
+  service_id varchar(100) NOT NULL,
+  phase varchar(16) NOT NULL CHECK (phase IN ('active','recovering','recovered')),
+  first_observed_at timestamptz NOT NULL,
+  opened_at timestamptz NOT NULL,
+  last_observed_at timestamptz NOT NULL,
+  recovery_since timestamptz,
+  recovered_at timestamptz,
+  sources text[] NOT NULL,
+  CHECK ((phase = 'recovered') = (recovered_at IS NOT NULL)),
+  CHECK (last_observed_at >= first_observed_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS system_service_incidents_one_open
+  ON public.system_service_incidents(controller_name, service_id) WHERE recovered_at IS NULL;
+CREATE INDEX IF NOT EXISTS system_service_incidents_history
+  ON public.system_service_incidents(controller_name, service_id, opened_at DESC, id DESC);
+
+-- Reviewed in-app recipients and a transactional incident outbox. No external transport.
+CREATE TABLE IF NOT EXISTS public.service_notification_rules (
+  controller_name varchar(200) NOT NULL,
+  service_id varchar(100) NOT NULL,
+  revision integer NOT NULL DEFAULT 0 CHECK (revision >= 0),
+  enabled boolean NOT NULL DEFAULT false,
+  recipient_ids uuid[] NOT NULL DEFAULT ARRAY[]::uuid[] CHECK (cardinality(recipient_ids) <= 10),
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  updated_by uuid,
+  PRIMARY KEY(controller_name,service_id)
+);
+CREATE TABLE IF NOT EXISTS public.service_notification_reviews (
+  request_id uuid PRIMARY KEY,
+  actor_id uuid NOT NULL,
+  input_digest text NOT NULL,
+  result jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TABLE IF NOT EXISTS public.service_notifications (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL REFERENCES public.system_service_incidents(id),
+  controller_name varchar(200) NOT NULL,
+  service_id varchar(100) NOT NULL,
+  event_kind varchar(16) NOT NULL CHECK(event_kind IN ('opened','recovered')),
+  recipient_id uuid NOT NULL,
+  rule_revision integer NOT NULL,
+  state varchar(16) NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','delivered','cancelled')),
+  queued_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  delivered_at timestamptz,
+  read_at timestamptz,
+  cancel_reason varchar(40),
+  UNIQUE(incident_id,event_kind,recipient_id),
+  CHECK ((state='delivered') = (delivered_at IS NOT NULL)),
+  CHECK (read_at IS NULL OR state='delivered')
+);
+CREATE INDEX IF NOT EXISTS service_notifications_pending ON public.service_notifications(queued_at,id) WHERE state='queued';
+CREATE INDEX IF NOT EXISTS service_notifications_inbox ON public.service_notifications(recipient_id,queued_at DESC,id DESC) WHERE state='delivered' AND read_at IS NULL;
+
+-- Separately reviewed node-local webhook targets. No URLs or secrets in the ledger.
+CREATE TABLE IF NOT EXISTS public.service_webhook_rules (
+  controller_name varchar(200) NOT NULL,
+  service_id varchar(100) NOT NULL,
+  revision integer NOT NULL DEFAULT 0 CHECK(revision>=0),
+  enabled boolean NOT NULL DEFAULT false,
+  target_id varchar(64),
+  target_digest varchar(64),
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  updated_by uuid,
+  PRIMARY KEY(controller_name,service_id)
+);
+CREATE TABLE IF NOT EXISTS public.service_webhook_reviews (
+  request_id uuid PRIMARY KEY,
+  actor_id uuid NOT NULL,
+  input_digest varchar(64) NOT NULL,
+  result jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TABLE IF NOT EXISTS public.service_webhook_deliveries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL REFERENCES public.system_service_incidents(id),
+  controller_name varchar(200) NOT NULL,
+  service_id varchar(100) NOT NULL,
+  event_kind varchar(16) NOT NULL CHECK(event_kind IN ('opened','recovered')),
+  occurred_at timestamptz NOT NULL,
+  target_id varchar(64) NOT NULL,
+  target_digest varchar(64) NOT NULL,
+  rule_revision integer NOT NULL,
+  state varchar(16) NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','delivered','cancelled','failed')),
+  attempts integer NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 8),
+  next_attempt_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  lease_token uuid,
+  lease_until timestamptz,
+  queued_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  delivered_at timestamptz,
+  last_outcome varchar(40),
+  UNIQUE(incident_id,event_kind),
+  CHECK((state='delivered')=(delivered_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS service_webhook_pending ON public.service_webhook_deliveries(controller_name,next_attempt_at,id) WHERE state='queued';
+CREATE INDEX IF NOT EXISTS service_webhook_recent ON public.service_webhook_deliveries(controller_name,service_id,queued_at DESC,id DESC);
+
+-- Preserve attempt totals and remote ACK evidence; operator decisions are separate.
+ALTER TABLE public.service_webhook_deliveries ADD COLUMN IF NOT EXISTS revision integer NOT NULL DEFAULT 0;
+ALTER TABLE public.service_webhook_deliveries ADD COLUMN IF NOT EXISTS attempt_limit integer NOT NULL DEFAULT 8 CHECK(attempt_limit BETWEEN 8 AND 24);
+ALTER TABLE public.service_webhook_deliveries ADD COLUMN IF NOT EXISTS retry_round integer NOT NULL DEFAULT 0 CHECK(retry_round BETWEEN 0 AND 2);
+ALTER TABLE public.service_webhook_deliveries ADD COLUMN IF NOT EXISTS operator_resolution varchar(16) CHECK(operator_resolution IN ('accepted','closed'));
+ALTER TABLE public.service_webhook_deliveries ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
+ALTER TABLE public.service_webhook_deliveries DROP CONSTRAINT IF EXISTS service_webhook_deliveries_attempts_check;
+ALTER TABLE public.service_webhook_deliveries ADD CONSTRAINT service_webhook_deliveries_attempts_check CHECK(attempts BETWEEN 0 AND 24 AND attempts<=attempt_limit);
+CREATE TABLE IF NOT EXISTS public.service_webhook_decisions (
+  request_id uuid PRIMARY KEY,
+  delivery_id uuid NOT NULL REFERENCES public.service_webhook_deliveries(id),
+  actor_id uuid NOT NULL,
+  input_digest varchar(64) NOT NULL,
+  decision varchar(16) NOT NULL CHECK(decision IN ('accepted','retry','close')),
+  result jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS service_webhook_decisions_delivery ON public.service_webhook_decisions(delivery_id,created_at DESC);
