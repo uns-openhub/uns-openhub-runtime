@@ -7615,3 +7615,53 @@ CREATE INDEX IF NOT EXISTS relationship_operation_manifest_anchor_idx
   ON public.relationship_operation_manifest (kind, anchor_full_topic);
 CREATE INDEX IF NOT EXISTS object_id_relationship_operation_idx
   ON public.object_id_relationship ((evidence_json->'operationManifest'->>'operationId'));
+
+-- A missing receipt is not evidence of non-execution. Close a request UUID durably,
+-- serialized with receipt insertion, before permitting another reviewed decision.
+CREATE TABLE IF NOT EXISTS public.relationship_operation_review_closure (
+  operation_id uuid PRIMARY KEY,
+  request_digest text NOT NULL CHECK (length(request_digest) = 64),
+  closure_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- One unique outcome claim is shared by both tables. This also fences writers
+-- using an older transaction snapshot: a conflicting insert waits or aborts;
+-- it cannot rely on an invisible cross-table row.
+CREATE TABLE IF NOT EXISTS public.relationship_operation_review_fence (
+  operation_id uuid PRIMARY KEY,
+  outcome text NOT NULL CHECK (outcome IN ('committed', 'closed_without_decision'))
+);
+
+-- Fence even a delayed receipt writer that predates the application-level lock.
+-- Installing these triggers waits for existing table writers. Transaction-scoped
+-- locking and the paired checks prevent a receipt and a closure for the same UUID.
+CREATE OR REPLACE FUNCTION public.guard_relationship_operation_review_outcome()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('relationship-review:' || NEW.operation_id::text, 0));
+  INSERT INTO public.relationship_operation_review_fence (operation_id, outcome)
+    VALUES (NEW.operation_id, CASE WHEN TG_TABLE_NAME = 'relationship_operation_review' THEN 'committed' ELSE 'closed_without_decision' END)
+    ON CONFLICT (operation_id) DO NOTHING;
+  IF NOT EXISTS (SELECT 1 FROM public.relationship_operation_review_fence
+    WHERE operation_id = NEW.operation_id AND outcome = CASE WHEN TG_TABLE_NAME = 'relationship_operation_review' THEN 'committed' ELSE 'closed_without_decision' END) THEN
+    RAISE EXCEPTION 'Review request already has a different durable outcome' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS relationship_operation_receipt_fence ON public.relationship_operation_review;
+CREATE TRIGGER relationship_operation_receipt_fence BEFORE INSERT ON public.relationship_operation_review
+  FOR EACH ROW EXECUTE FUNCTION public.guard_relationship_operation_review_outcome();
+DROP TRIGGER IF EXISTS relationship_operation_closure_fence ON public.relationship_operation_review_closure;
+CREATE TRIGGER relationship_operation_closure_fence BEFORE INSERT ON public.relationship_operation_review_closure
+  FOR EACH ROW EXECUTE FUNCTION public.guard_relationship_operation_review_outcome();
+
+-- Trigger installation holds the receipt-table DDL lock until commit. All old
+-- receipts are claimed before later writers can use the new closure endpoint.
+INSERT INTO public.relationship_operation_review_fence (operation_id, outcome)
+  SELECT operation_id, 'committed' FROM public.relationship_operation_review
+  ON CONFLICT (operation_id) DO NOTHING;
+
+-- Stable bounded keyset pages of producer operations for one material anchor.
+CREATE INDEX IF NOT EXISTS relationship_operation_manifest_selection_idx
+  ON public.relationship_operation_manifest (kind, anchor_full_topic, created_at DESC, operation_id DESC);
