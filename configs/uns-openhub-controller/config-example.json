@@ -30,7 +30,7 @@
     "graphqlEndpoint": "/graphql",
     "ip": "uns-openhub-controller",
     "port": 3200,
-    "cluster": true,
+    "cluster": false,
     "infisicalSecretCacheEnabled": true,
     "infisicalTokenReloadSeconds": 86400,
     "clusterTimings": {
@@ -60,8 +60,7 @@
     "repositorySources": [
       {
         "id": "uns-openhub-public",
-        "provider": "github",
-        "owner": "uns-openhub",
+        "provider": "openhub-catalog",
         "versions": {
           "mode": "releases",
           "includePrereleases": false
