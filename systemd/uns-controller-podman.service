@@ -1,7 +1,8 @@
 [Unit]
 Description=UNS OpenHub Controller (Podman)
-After=network-online.target
-Wants=network-online.target
+# Renewing credentials must not stop the Runtime or its microservices.
+After=network-online.target infisical-rotator.service
+Wants=network-online.target infisical-rotator.service
 
 [Service]
 Type=oneshot

@@ -7797,3 +7797,20 @@ CREATE TABLE IF NOT EXISTS public.service_webhook_decisions (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX IF NOT EXISTS service_webhook_decisions_delivery ON public.service_webhook_decisions(delivery_id,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.rtt_process_group_operation (
+ id uuid PRIMARY KEY, revision integer NOT NULL DEFAULT 1,
+ state text NOT NULL CHECK(state IN ('planned','stopping','launching','active','rollback_stopping','restoring','rolled_back')),
+ fingerprint text NOT NULL, plan jsonb NOT NULL, progress jsonb NOT NULL DEFAULT '{}',
+ requested_by text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS public.rtt_process_group_resource (
+ rtt_node text NOT NULL, process_name text NOT NULL,
+ operation_id uuid NOT NULL REFERENCES public.rtt_process_group_operation(id),
+ placement jsonb NOT NULL, role text NOT NULL CHECK(role IN ('source','target')), configuration_checksum text NOT NULL,
+ PRIMARY KEY(rtt_node,process_name)
+);
+CREATE TABLE IF NOT EXISTS public.rtt_process_group_event (
+ id bigserial PRIMARY KEY, operation_id uuid NOT NULL REFERENCES public.rtt_process_group_operation(id),
+ revision integer NOT NULL, actor text NOT NULL, message text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);

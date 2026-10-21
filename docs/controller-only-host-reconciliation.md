@@ -204,6 +204,10 @@ mode is correct. The service should call the Runtime lifecycle instead of
 duplicating a raw `podman run` command:
 
 ```ini
+[Unit]
+After=network-online.target infisical-rotator.service
+Wants=network-online.target infisical-rotator.service
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes
@@ -223,6 +227,33 @@ values, systemd can invoke a different Podman storage or fail to discover
 
 ## 6. Repoint and verify the rotator
 
+Before restarting the rotator, inspect the installed Runtime unit, including
+its drop-ins. Use soft `Wants=` and ordering `After=` for the rotator. Do not
+use `Requires=`, `Requisite=`, `BindsTo=`, `PartOf=` or
+`StopPropagatedFrom=` for this relationship: rotator maintenance must not
+stop the controller container or RTT microservices. Keep all storage/mount
+requirements and `ExecStartPre` checks for non-empty credential/config files.
+Soft ordering is not proof that a token is valid; startup/authentication checks
+must still reject missing or expired credentials.
+
+For an existing locally managed unit, the shipped helper first prints a dry-run
+plan without exposing unit contents or environment values:
+
+```sh
+sudo python3 scripts/repair-controller-rotator-systemd.py
+# Review the exact unit files and dependency names, then apply:
+sudo python3 scripts/repair-controller-rotator-systemd.py --apply
+```
+
+Run these commands from the Runtime directory. Use `--unit` if the host uses a
+different service name. The helper removes only the exact rotator dependency
+from local unit files, adds a soft dependency drop-in, retains private backups
+below `/etc/systemd/system/.openhub-unit-backups`, and verifies effective
+dependencies after `daemon-reload`. It never starts or stops services. Failed
+verification restores its configuration edits and reloads again. Vendor units,
+symlinked sources, conflicts, or relationships declared elsewhere require
+separate review; do not bypass that rejection by clearing all dependencies.
+
 Keep the existing machine identity or rotator token source. Update the rotator
 service so its output directory is the active Runtime's `.secrets` directory,
 then restart it:
@@ -234,7 +265,10 @@ systemctl is-active infisical-rotator.service
 ```
 
 Verify that the secret files were refreshed, are owned by the expected account,
-and have mode `0600`. Do not display their values.
+and have mode `0600`. Do not display their values. Confirm that the Runtime's
+active state, container ID and controller PID stayed unchanged during the
+rotator restart. A deliberate rotator failure must leave an already running
+Runtime active; perform that fault test only in an isolated local environment.
 
 ## 7. Restart test and acceptance
 
