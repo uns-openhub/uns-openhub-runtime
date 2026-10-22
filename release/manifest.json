@@ -2,114 +2,114 @@
   "schemaVersion": 2,
   "product": "uns-openhub",
   "releaseEpoch": 2,
-  "version": "2.2.23",
-  "tag": "2.2.23",
-  "imageTag": "2.2.23",
+  "version": "2.2.24",
+  "tag": "2.2.24",
+  "imageTag": "2.2.24",
   "repository": "uns-openhub/uns-openhub-runtime",
   "assets": [
     {
-      "name": "controller-runtime-2.2.23.manifest.json",
-      "sha256": "fae38fe2bf714af3529fd736d863adf80a3166d0e98b637d688122e96541c9b4"
+      "name": "controller-runtime-2.2.24.manifest.json",
+      "sha256": "464a13f57a8d97d833a17ec5e0330e46e14ff0f949dc481284da598f99c73c20"
     },
     {
-      "name": "controller-runtime-2.2.23.tar.gz",
-      "sha256": "c5cc640c5f15ce961156fbaf749914be15d5815e09af703a49a8eddb330662c4"
+      "name": "controller-runtime-2.2.24.tar.gz",
+      "sha256": "77c14ea4c3adeb6d623ccd65346689de1009b5f4c1268bef3a29f7b9454fdbc0"
     },
     {
-      "name": "controller-runtime-2.2.23.tar.gz.sha256",
-      "sha256": "33144bde0a0f1ec8fe1cde53421b80e84cac2c11770e5b1837a2f3893c934d25"
+      "name": "controller-runtime-2.2.24.tar.gz.sha256",
+      "sha256": "5964413db8ee6ea2f1bc7e47eacca238b5b54b41d2e044c6fa77f5e6b3783602"
     },
     {
-      "name": "infisical-rotator-2.2.23-darwin-amd64",
+      "name": "infisical-rotator-2.2.24-darwin-amd64",
       "sha256": "d25d3cae76bf6f85c1c5309557ae6620255c006610ae10500b56b970e4d94ea3"
     },
     {
-      "name": "infisical-rotator-2.2.23-darwin-arm64",
+      "name": "infisical-rotator-2.2.24-darwin-arm64",
       "sha256": "25abeb4ed702b0580b7f5ad044cd23af54bec07b767c210c5c40e2719eb0a673"
     },
     {
-      "name": "infisical-rotator-2.2.23-linux-amd64",
+      "name": "infisical-rotator-2.2.24-linux-amd64",
       "sha256": "fe79006cf4dff5c7639d62322d1b4cd75de5f03a19d1bfd03904968bddbb6459"
     },
     {
-      "name": "infisical-rotator-2.2.23-linux-arm64",
+      "name": "infisical-rotator-2.2.24-linux-arm64",
       "sha256": "b9d9c7b7e4cf940f520bae5d1804ada2238e5ffd444a2bd6274496fcf0b6172e"
     },
     {
-      "name": "infisical-rotator-2.2.23-windows-amd64.exe",
+      "name": "infisical-rotator-2.2.24-windows-amd64.exe",
       "sha256": "531edc27dd1120cf05ba0bd7607d9a9fd0f728accb5ad6e446841fd361589596"
     },
     {
-      "name": "infisical-rotator-2.2.23-windows-arm64.exe",
+      "name": "infisical-rotator-2.2.24-windows-arm64.exe",
       "sha256": "091e8783ed82b77cbd627b10208f9cb2f0e94966ce5e7fd5f9c61f754171bd77"
     },
     {
-      "name": "uns-2.2.23-darwin-amd64",
-      "sha256": "2f80b9926e83bf284d14505b1402f84774cdd1297ba8554ac7b38b0ffb82880f"
+      "name": "uns-2.2.24-darwin-amd64",
+      "sha256": "71445b1ddc16fd5c4d815c10b2e4807431fc1b335564afe26dece4ceceb7f203"
     },
     {
-      "name": "uns-2.2.23-darwin-arm64",
-      "sha256": "286527c555d0341f9ea6e712b0ba3a747cf551072c877bbe21ce7e2c55a591f9"
+      "name": "uns-2.2.24-darwin-arm64",
+      "sha256": "1e9331578651ce3281587081a24465f8a8880939c4750011dffdc0708783068b"
     },
     {
-      "name": "uns-2.2.23-linux-amd64",
-      "sha256": "948153942bb7e438194175f67c2e4175e523571efe3b4a8b2c4233ca384e97d3"
+      "name": "uns-2.2.24-linux-amd64",
+      "sha256": "6d9bef7315fbb147d3af3e5a18b6a0190bca0ebe7b7f37a5292bb56a4c26db5c"
     },
     {
-      "name": "uns-2.2.23-linux-arm64",
-      "sha256": "0222b6f23a7e86adba2c79120e6bf77dda7072c7a22d8ef16afbdb2fd6548ada"
+      "name": "uns-2.2.24-linux-arm64",
+      "sha256": "b9b418a5ba25b646417dfa52d0771c0cbf89854e48bc6d910c0a8038ac0a9eff"
     },
     {
-      "name": "uns-2.2.23-windows-amd64.exe",
-      "sha256": "f986112dbf9b8453253407e5b169bcaa30708dd15786d08254f50b484fb8995c"
+      "name": "uns-2.2.24-windows-amd64.exe",
+      "sha256": "50f541896670c4855a9d9ad78d69547821604af168eca853cf5cc79e6feee415"
     },
     {
-      "name": "uns-2.2.23-windows-arm64.exe",
-      "sha256": "1f71bc566413c6bb0f2a6ed65e70a7e9a3cac0f608c1b8c48282d7a0e63fe3ce"
+      "name": "uns-2.2.24-windows-arm64.exe",
+      "sha256": "7780b5528b38debf235400e75908902d5f98628607a4605e5d2213514134b56b"
     },
     {
-      "name": "uns-backup-helper-2.2.23-darwin-amd64",
-      "sha256": "fa58d9430b21c705af5aaf744aeab41f4f4268da9a1927f15974494b4ae886aa"
+      "name": "uns-backup-helper-2.2.24-darwin-amd64",
+      "sha256": "4ab5800e29845b6c52acea53734c08d90dcfa3e8515330bb0af0ff1daee2523f"
     },
     {
-      "name": "uns-backup-helper-2.2.23-darwin-arm64",
-      "sha256": "9c8a3807bed1fd52f2629689725e798860eb69256969e46743bdee749dc5534d"
+      "name": "uns-backup-helper-2.2.24-darwin-arm64",
+      "sha256": "eb03b1f1e41d124df20a0d6f24306f2fc4da148c81e21cdfdbbb8f819756b835"
     },
     {
-      "name": "uns-backup-helper-2.2.23-linux-amd64",
-      "sha256": "b540459d3fad545bf858293b1ae943d33154f7fb2e483fb6012f32f3cb224eb2"
+      "name": "uns-backup-helper-2.2.24-linux-amd64",
+      "sha256": "f476549fc2184e8e9eaa263162a567a6bf7d13ae27cb8f2e3b59aeacb5f41070"
     },
     {
-      "name": "uns-backup-helper-2.2.23-linux-arm64",
-      "sha256": "6ad78fec7f1b3c8bbc8f15896f593fdf798b05f64b60020599ce5bd06bcec230"
+      "name": "uns-backup-helper-2.2.24-linux-arm64",
+      "sha256": "8504548267327ea292afd063af96f44a53250cfddf4990822cbdaae5e4af6e8a"
     },
     {
-      "name": "uns-backup-helper-2.2.23-windows-amd64.exe",
-      "sha256": "30cae495f9d877a3f3f937a175ac5252f72b4ce6b652e93c662e47ff3c922151"
+      "name": "uns-backup-helper-2.2.24-windows-amd64.exe",
+      "sha256": "01f4af51997c4e4555e527dc8a974a872a8b1b057872c52ed4d7d4c012043644"
     },
     {
-      "name": "uns-backup-helper-2.2.23-windows-arm64.exe",
-      "sha256": "7a526a6d40ae8076a0e15957c53e274a8888e160ec487c58a6434330c94c548c"
+      "name": "uns-backup-helper-2.2.24-windows-arm64.exe",
+      "sha256": "5183a0926875ee190cf6260ac9d4f29540cb6cc3e2bea2cc04fee9d1668c8e15"
     }
   ],
   "controller": {
     "schemaVersion": 1,
     "name": "uns-openhub-controller-runtime",
-    "version": "2.2.23",
-    "packageVersion": "2.2.23",
+    "version": "2.2.24",
+    "packageVersion": "2.2.24",
     "packageName": "uns-openhub-controller",
-    "createdAt": "2026-10-21T19:52:21+02:00",
+    "createdAt": "2026-10-22T09:11:53+02:00",
     "nodeEngines": ">=22",
     "packageManager": "pnpm@10.30.3",
     "source": {
-      "commit": "4c35db7937aee86f21759271a05c090fd4f81ee0",
+      "commit": "26bfc72f517c6585e3a4395fa629dc22da99b024",
       "ref": "main"
     },
     "files": {
-      "distFileCount": 1390,
+      "distFileCount": 1391,
       "distIndexSha256": "301e83821ea51415dc9180a2422b579bfbea14026be38c40b38739a54f77d8a1",
       "initSqlSha256": "a75d3303a181d303ea3699aac3363082ac64ec52a51b6eeba559b7b383fd7936",
-      "packageJsonSha256": "f4081b3edcb2d3262a80d2040236abf7769fa8b9f14bab60395bd17d97da9c3e",
+      "packageJsonSha256": "e600c6beba17eec722bab6b0da6121a226f5083a09f5d865f715d8ade1b41531",
       "pnpmLockSha256": "6dc983f38c477bd4724f4bb9250a7d956f35ce4e9f4ffc5edf0a7707a2e8d1a1"
     }
   }
