@@ -7814,3 +7814,14 @@ CREATE TABLE IF NOT EXISTS public.rtt_process_group_event (
  id bigserial PRIMARY KEY, operation_id uuid NOT NULL REFERENCES public.rtt_process_group_operation(id),
  revision integer NOT NULL, actor text NOT NULL, message text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Explicit administrator-reviewed replacement generations. No tokens or keys.
+CREATE TABLE IF NOT EXISTS public.rtt_service_identity_reissues (
+  request_id uuid PRIMARY KEY,
+  identity_id uuid NOT NULL REFERENCES public.auth_workload_identities(id) ON DELETE RESTRICT,
+  rtt_node text NOT NULL,
+  instance_id text NOT NULL,
+  request_digest text NOT NULL CHECK (length(request_digest) = 64),
+  receipt_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
