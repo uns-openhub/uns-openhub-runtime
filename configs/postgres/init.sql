@@ -6031,6 +6031,10 @@ ALTER TABLE public.controller_member_lifecycle_event
   ADD COLUMN IF NOT EXISTS detail jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 -- Automation ownership and revisions (same contract as the upgrade migration).
+-- The image first-run psql driver uses autocommit. Keep the exact issued migration
+-- inside one statement so its locks protect the full installation there too.
+DO $automation_owner_install$
+BEGIN
 -- Serialize installation with legacy writers; run in the migration transaction.
 LOCK TABLE public.trigger_definitions, public.capture_definitions IN SHARE ROW EXCLUSIVE MODE;
 ALTER TABLE public.trigger_definitions ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 1;
@@ -6117,6 +6121,8 @@ FOR EACH STATEMENT EXECUTE FUNCTION public.clear_automation_definition_owners();
 DROP TRIGGER IF EXISTS automation_definition_truncate ON public.capture_definitions;
 CREATE TRIGGER automation_definition_truncate AFTER TRUNCATE ON public.capture_definitions
 FOR EACH STATEMENT EXECUTE FUNCTION public.clear_automation_definition_owners();
+END;
+$automation_owner_install$;
 
 -- C2-01 standalone authority foundation. No scheduler/helper is enabled here.
 -- Keep resource rows forever: deleting them would reset fencing epochs.
