@@ -7831,3 +7831,69 @@ CREATE TABLE IF NOT EXISTS public.rtt_service_identity_reissues (
   receipt_json jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS public.rtt_migration_preparation (
+  id text PRIMARY KEY CHECK (id ~ '^[0-9a-f]{64}$'),
+  scope_key text NOT NULL,
+  state text NOT NULL CHECK (state IN ('reviewed','installing','configuring','completed','needs_attention')),
+  review jsonb NOT NULL CHECK (jsonb_typeof(review) = 'object'),
+  message text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rtt_migration_preparation_scope_idx
+  ON public.rtt_migration_preparation(scope_key, updated_at DESC);
+CREATE TABLE IF NOT EXISTS public.rtt_migration_preparation_event (
+  id bigserial PRIMARY KEY,
+  preparation_id text NOT NULL REFERENCES public.rtt_migration_preparation(id),
+  state text NOT NULL,
+  message text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rtt_migration_preparation_event_idx
+  ON public.rtt_migration_preparation_event(preparation_id, id);
+
+ALTER TABLE public.rtt_migration_preparation DROP CONSTRAINT IF EXISTS rtt_migration_preparation_state_check;
+ALTER TABLE public.rtt_migration_preparation ADD CONSTRAINT rtt_migration_preparation_state_check CHECK(state IN ('reviewed','installing','configuring','completed','needs_attention','retired'));
+CREATE TABLE IF NOT EXISTS public.rtt_guided_migration (
+  id text PRIMARY KEY CHECK(id ~ '^[0-9a-f]{64}$'),
+  review jsonb NOT NULL CHECK(jsonb_typeof(review) = 'object'),
+  requested_by text NOT NULL,
+  state text NOT NULL CHECK(state IN ('reviewed','preparing','moving','completed','partial','needs_attention','cancelled')),
+  message text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS public.rtt_guided_migration_member (
+  operation_id text NOT NULL REFERENCES public.rtt_guided_migration(id),
+  ordinal integer NOT NULL CHECK(ordinal BETWEEN 0 AND 31),
+  preparation_id text NOT NULL,
+  migration_id uuid NOT NULL UNIQUE,
+  rtt_node text NOT NULL,
+  process_name text NOT NULL,
+  version text NOT NULL,
+  source_controller text NOT NULL,
+  source_instance_id text NOT NULL,
+  target_controller text NOT NULL,
+  target_instance_id text NOT NULL,
+  state text NOT NULL CHECK(state IN ('pending','preparing','prepared','moving','completed','rolled_back','needs_attention')),
+  reserved boolean NOT NULL DEFAULT true,
+  message text NOT NULL,
+  PRIMARY KEY(operation_id, ordinal)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS rtt_guided_migration_name_reservation
+  ON public.rtt_guided_migration_member(rtt_node,process_name) WHERE reserved;
+CREATE UNIQUE INDEX IF NOT EXISTS rtt_guided_migration_source_reservation
+  ON public.rtt_guided_migration_member(source_controller,rtt_node,version,source_instance_id) WHERE reserved;
+CREATE UNIQUE INDEX IF NOT EXISTS rtt_guided_migration_target_reservation
+  ON public.rtt_guided_migration_member(target_controller,rtt_node,version,target_instance_id) WHERE reserved;
+CREATE TABLE IF NOT EXISTS public.rtt_guided_migration_event (
+  id bigserial PRIMARY KEY,
+  operation_id text NOT NULL REFERENCES public.rtt_guided_migration(id),
+  ordinal integer,
+  state text NOT NULL,
+  message text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rtt_guided_migration_events
+  ON public.rtt_guided_migration_event(operation_id,id);

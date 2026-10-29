@@ -563,3 +563,11 @@ For Podman on SELinux hosts, set this in `.env`:
 ```env
 BIND_MOUNT_LABEL=,z
 ```
+
+Before a Runtime image/storage change, review
+[physical storage, capacity and storage-owner labels](docs/runtime-storage-readiness.md).
+The CLI checks actual mounts and the selected image before stop. It does not
+enable queues, reserve capacity, change permissions or silently repair labels.
+Use a separately reviewed next-image capacity plan and retain the old plan for
+rollback. Root-owned archives may require a narrow storage-owner label policy
+instead of recursive rootless relabeling; do not disable SELinux to bypass it.

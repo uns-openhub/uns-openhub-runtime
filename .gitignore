@@ -3,6 +3,9 @@
 .cache/
 .release/
 /backups
+/runtime-capacity-plan.json
+/capacity-selection.json
+/docker-compose.storage-labels.yml
 /runtime-tools/*
 !/runtime-tools/.gitkeep
 configs/uns-openhub-controller/config*.json
