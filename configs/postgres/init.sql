@@ -7897,3 +7897,15 @@ CREATE TABLE IF NOT EXISTS public.rtt_guided_migration_event (
 );
 CREATE INDEX IF NOT EXISTS rtt_guided_migration_events
   ON public.rtt_guided_migration_event(operation_id,id);
+
+-- Shared operating reference only; no process, security policy or runtime configuration effects.
+CREATE TABLE IF NOT EXISTS public.operator_guide_note_revision (
+  revision bigint PRIMARY KEY CHECK (revision > 0),
+  request_id uuid NOT NULL UNIQUE,
+  request_sha256 text NOT NULL CHECK (request_sha256 ~ '^[a-f0-9]{64}$'),
+  content_sha256 text NOT NULL CHECK (content_sha256 ~ '^[a-f0-9]{64}$'),
+  notes jsonb NOT NULL CHECK (jsonb_typeof(notes)='object' AND octet_length(notes::text)<=65536),
+  reason text NOT NULL CHECK (length(reason) BETWEEN 1 AND 500),
+  updated_by text NOT NULL CHECK (length(updated_by) BETWEEN 1 AND 512),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
