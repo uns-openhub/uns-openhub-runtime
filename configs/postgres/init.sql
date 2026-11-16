@@ -7909,3 +7909,142 @@ CREATE TABLE IF NOT EXISTS public.operator_guide_note_revision (
   updated_by text NOT NULL CHECK (length(updated_by) BETWEEN 1 AND 512),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Catalog publication authority (also idempotently installed by its migration).
+CREATE TABLE IF NOT EXISTS public.catalog_publication_reviews (
+ id uuid PRIMARY KEY, actor text NOT NULL, payload jsonb NOT NULL, expires_at timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS public.catalog_publication_grants (
+ key text PRIMARY KEY, candidate jsonb NOT NULL, audience_roles jsonb NOT NULL,
+ revision integer NOT NULL CHECK(revision>0), active boolean NOT NULL,
+ actor text NOT NULL, review_id uuid NOT NULL REFERENCES public.catalog_publication_reviews(id),
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS public.catalog_publication_audit (
+ id bigserial PRIMARY KEY, grant_key text, actor text NOT NULL, service text NOT NULL,
+ launch_id text, operation_id text NOT NULL, revision integer NOT NULL, outcome text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS catalog_publication_audit_grant ON public.catalog_publication_audit(grant_key,id);
+
+-- Durable combined configuration/access decisions.
+-- Durable authority decision and reconciliation ledger. Configuration contents
+-- stay in node-local private staging or an existing signed Shared profile.
+CREATE TABLE IF NOT EXISTS public.service_configuration_saves (
+ id uuid PRIMARY KEY,
+ actor_id text NOT NULL,
+ controller_name text NOT NULL,
+ rtt_node text NOT NULL,
+ instance_id text NOT NULL,
+ logical_instance_id text NOT NULL,
+ payload_digest text NOT NULL CHECK(payload_digest ~ '^[a-f0-9]{64}$'),
+ payload jsonb NOT NULL,
+ state text NOT NULL CHECK(state IN ('reviewed','committed','complete','superseded')),
+ expires_at timestamptz NOT NULL,
+ identity_id uuid,
+ decision jsonb,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ CHECK(octet_length(payload::text) <= 1048576)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS service_configuration_saves_pending
+ ON public.service_configuration_saves(rtt_node,logical_instance_id)
+ WHERE state='committed';
+CREATE INDEX IF NOT EXISTS service_configuration_saves_identity_pending
+ ON public.service_configuration_saves(identity_id) WHERE state='committed';
+CREATE TABLE IF NOT EXISTS public.service_configuration_save_events (
+ id bigserial PRIMARY KEY,
+ operation_id uuid NOT NULL REFERENCES public.service_configuration_saves(id) ON DELETE RESTRICT,
+ actor_id text NOT NULL,
+ outcome text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Ordinary policy writes must not overtake committed file/credential work.
+-- Revocation always wins; periodic token-file renewal is not a policy mutation.
+CREATE OR REPLACE FUNCTION public.guard_service_configuration_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE previous_id uuid; previous_name text; next_name text;
+BEGIN
+ IF TG_OP='UPDATE' THEN
+   IF NEW."isActive"=false THEN RETURN NEW; END IF;
+   IF NEW."accessRules" IS NOT DISTINCT FROM OLD."accessRules"
+     AND NEW.scopes IS NOT DISTINCT FROM OLD.scopes
+     AND NEW."tokenVersion" IS NOT DISTINCT FROM OLD."tokenVersion"
+     AND NEW."isActive" IS NOT DISTINCT FROM OLD."isActive"
+     AND NEW.name IS NOT DISTINCT FROM OLD.name
+     AND NEW."identityType" IS NOT DISTINCT FROM OLD."identityType"
+     AND NEW."createdBy" IS NOT DISTINCT FROM OLD."createdBy"
+     AND NEW."expiresAt" IS NOT DISTINCT FROM OLD."expiresAt" THEN RETURN NEW; END IF;
+ END IF;
+ IF TG_OP<>'INSERT' THEN previous_id:=OLD.id; previous_name:=OLD.name::text; END IF;
+ IF TG_OP<>'DELETE' THEN next_name:=NEW.name::text; END IF;
+ IF EXISTS(SELECT 1 FROM public.service_configuration_saves s
+   WHERE s.state='committed'
+   AND (s.identity_id=previous_id OR ('rtt:' || s.rtt_node || ':' || s.instance_id) IN (previous_name,next_name))
+   AND s.id::text IS DISTINCT FROM current_setting('openhub.configuration_save',true)) THEN
+   RAISE EXCEPTION 'service_configuration_save_pending' USING ERRCODE='55000';
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS service_configuration_identity_guard ON public.auth_workload_identities;
+CREATE TRIGGER service_configuration_identity_guard BEFORE INSERT OR UPDATE OR DELETE ON public.auth_workload_identities
+ FOR EACH ROW EXECUTE FUNCTION public.guard_service_configuration_identity();
+
+CREATE OR REPLACE FUNCTION public.guard_service_configuration_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE previous_candidate jsonb; next_candidate jsonb;
+BEGIN
+ IF TG_OP='UPDATE' THEN
+   IF NEW.active=false THEN RETURN NEW; END IF;
+ END IF;
+ IF TG_OP<>'INSERT' THEN previous_candidate:=OLD.candidate; END IF;
+ IF TG_OP<>'DELETE' THEN next_candidate:=NEW.candidate; END IF;
+ IF EXISTS(SELECT 1 FROM public.service_configuration_saves s WHERE s.state='committed'
+   AND ((s.rtt_node=previous_candidate->>'rttNode' AND s.logical_instance_id=previous_candidate->>'logicalInstanceId')
+     OR (s.rtt_node=next_candidate->>'rttNode' AND s.logical_instance_id=next_candidate->>'logicalInstanceId'))
+   AND s.id::text IS DISTINCT FROM current_setting('openhub.configuration_save',true)) THEN
+   RAISE EXCEPTION 'service_configuration_save_pending' USING ERRCODE='55000';
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS service_configuration_publication_guard ON public.catalog_publication_grants;
+CREATE TRIGGER service_configuration_publication_guard BEFORE INSERT OR UPDATE OR DELETE ON public.catalog_publication_grants
+ FOR EACH ROW EXECUTE FUNCTION public.guard_service_configuration_publication();
+
+CREATE OR REPLACE FUNCTION public.guard_service_configuration_binding() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE previous_identity uuid; previous_node text; previous_instance text; next_node text; next_instance text;
+BEGIN
+ IF TG_OP='UPDATE' THEN
+   IF NEW.machine_identity_id=OLD.machine_identity_id AND NEW.profile_fingerprint=OLD.profile_fingerprint
+     AND NEW.rtt_node=OLD.rtt_node AND NEW.instance_id=OLD.instance_id THEN RETURN NEW; END IF;
+ END IF;
+ IF TG_OP<>'INSERT' THEN
+   previous_identity:=OLD.machine_identity_id; previous_node:=OLD.rtt_node; previous_instance:=OLD.instance_id;
+ END IF;
+ IF TG_OP<>'DELETE' THEN next_node:=NEW.rtt_node; next_instance:=NEW.instance_id; END IF;
+ IF EXISTS(SELECT 1 FROM public.service_configuration_saves s WHERE s.state='committed'
+   AND (s.identity_id=previous_identity OR (s.rtt_node=previous_node AND s.instance_id=previous_instance)
+     OR (s.rtt_node=next_node AND s.instance_id=next_instance))
+   AND s.id::text IS DISTINCT FROM current_setting('openhub.configuration_save',true)) THEN
+   RAISE EXCEPTION 'service_configuration_save_pending' USING ERRCODE='55000';
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS service_configuration_binding_guard ON public.rtt_service_identity_bindings;
+CREATE TRIGGER service_configuration_binding_guard BEFORE INSERT OR UPDATE OR DELETE ON public.rtt_service_identity_bindings
+ FOR EACH ROW EXECUTE FUNCTION public.guard_service_configuration_binding();
+-- One explicit administrator consent, kept separate from active C40 authority.
+CREATE TABLE IF NOT EXISTS public.service_installation_reviews (
+ id uuid PRIMARY KEY, actor_id text NOT NULL, controller_name text NOT NULL,
+ payload_digest text NOT NULL CHECK(payload_digest ~ '^[a-f0-9]{64}$'),
+ review_digest text NOT NULL CHECK(review_digest ~ '^[a-f0-9]{64}$'),
+ review jsonb NOT NULL, state text NOT NULL CHECK(state IN ('reviewed','approved','complete','superseded')),
+ expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS service_installation_reviews_owner ON public.service_installation_reviews(controller_name,actor_id,state,created_at);
+CREATE TABLE IF NOT EXISTS public.service_installation_events (
+ id bigserial PRIMARY KEY, operation_id uuid NOT NULL REFERENCES public.service_installation_reviews(id),
+ actor_id text NOT NULL, outcome text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(operation_id,outcome)
+);
