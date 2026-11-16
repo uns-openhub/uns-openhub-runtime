@@ -8048,3 +8048,102 @@ CREATE TABLE IF NOT EXISTS public.service_installation_events (
  id bigserial PRIMARY KEY, operation_id uuid NOT NULL REFERENCES public.service_installation_reviews(id),
  actor_id text NOT NULL, outcome text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(operation_id,outcome)
 );
+-- Private, durable process-exit checkpoint for a reviewed configuration save.
+-- Active checkpoints reserve the instance; this table does not grant access.
+CREATE TABLE IF NOT EXISTS public.service_configuration_exit (
+ operation_id uuid PRIMARY KEY REFERENCES public.service_configuration_saves(id) ON DELETE RESTRICT,
+ actor_id text NOT NULL,
+ controller_name text NOT NULL,
+ source_controller text NOT NULL,
+ source_version text NOT NULL,
+ source_instance_id text NOT NULL,
+ rtt_node text NOT NULL,
+ instance_id text NOT NULL,
+ logical_instance_id text NOT NULL,
+ active boolean NOT NULL DEFAULT true,
+ phase text NOT NULL CHECK(phase IN ('reviewed','fenced','drain-requested','exited')),
+ launch_id text NOT NULL CHECK(length(launch_id) BETWEEN 1 AND 200),
+ pid integer NOT NULL CHECK(pid > 0),
+ restarts integer NOT NULL CHECK(restarts >= 0),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS service_configuration_exit_active
+ ON public.service_configuration_exit(rtt_node,logical_instance_id) WHERE active;
+CREATE UNIQUE INDEX IF NOT EXISTS service_configuration_exit_instance_active
+ ON public.service_configuration_exit(rtt_node,instance_id) WHERE active;
+
+-- While the original launch is fenced, block separate authority changes.
+-- Revocation remains allowed and wins over any later attempted transition.
+CREATE OR REPLACE FUNCTION public.guard_configuration_exit_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE previous_name text; next_name text; lock_name text;
+BEGIN
+ IF TG_OP='UPDATE' THEN
+  IF NEW."isActive"=false THEN RETURN NEW; END IF;
+  IF NEW."accessRules" IS NOT DISTINCT FROM OLD."accessRules" AND NEW.scopes IS NOT DISTINCT FROM OLD.scopes
+    AND NEW."tokenVersion" IS NOT DISTINCT FROM OLD."tokenVersion" AND NEW."isActive" IS NOT DISTINCT FROM OLD."isActive"
+    AND NEW.name IS NOT DISTINCT FROM OLD.name AND NEW."identityType" IS NOT DISTINCT FROM OLD."identityType"
+    AND NEW."createdBy" IS NOT DISTINCT FROM OLD."createdBy" AND NEW."expiresAt" IS NOT DISTINCT FROM OLD."expiresAt" THEN RETURN NEW; END IF;
+ END IF;
+ IF TG_OP<>'INSERT' THEN previous_name:=OLD.name::text; END IF;
+ IF TG_OP<>'DELETE' THEN next_name:=NEW.name::text; END IF;
+ FOR lock_name IN SELECT DISTINCT n FROM unnest(ARRAY[previous_name,next_name]) AS n WHERE n IS NOT NULL ORDER BY n LOOP
+  PERFORM pg_advisory_xact_lock(hashtextextended('configuration-exit:identity:' || lock_name,0));
+ END LOOP;
+ IF EXISTS(SELECT 1 FROM public.service_configuration_exit e WHERE e.active
+  AND ('rtt:' || e.rtt_node || ':' || e.instance_id) IN (previous_name,next_name)
+  AND e.operation_id::text IS DISTINCT FROM current_setting('openhub.configuration_save',true)) THEN
+  RAISE EXCEPTION 'service_configuration_exit_pending' USING ERRCODE='55000';
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS service_configuration_exit_identity_guard ON public.auth_workload_identities;
+CREATE TRIGGER service_configuration_exit_identity_guard BEFORE INSERT OR UPDATE OR DELETE ON public.auth_workload_identities
+ FOR EACH ROW EXECUTE FUNCTION public.guard_configuration_exit_identity();
+
+CREATE OR REPLACE FUNCTION public.guard_configuration_exit_binding() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE previous_node text; previous_instance text; next_node text; next_instance text; lock_name text;
+BEGIN
+ IF TG_OP='UPDATE' AND NEW.machine_identity_id=OLD.machine_identity_id AND NEW.profile_fingerprint=OLD.profile_fingerprint
+  AND NEW.rtt_node=OLD.rtt_node AND NEW.instance_id=OLD.instance_id THEN RETURN NEW; END IF;
+ IF TG_OP<>'INSERT' THEN previous_node:=OLD.rtt_node; previous_instance:=OLD.instance_id; END IF;
+ IF TG_OP<>'DELETE' THEN next_node:=NEW.rtt_node; next_instance:=NEW.instance_id; END IF;
+ FOR lock_name IN SELECT DISTINCT n FROM unnest(ARRAY['rtt:' || previous_node || ':' || previous_instance,'rtt:' || next_node || ':' || next_instance]) AS n WHERE n IS NOT NULL ORDER BY n LOOP
+  PERFORM pg_advisory_xact_lock(hashtextextended('configuration-exit:identity:' || lock_name,0));
+ END LOOP;
+ IF EXISTS(SELECT 1 FROM public.service_configuration_exit e WHERE e.active
+  AND ((e.rtt_node=previous_node AND e.instance_id=previous_instance) OR (e.rtt_node=next_node AND e.instance_id=next_instance))
+  AND e.operation_id::text IS DISTINCT FROM current_setting('openhub.configuration_save',true)) THEN
+  RAISE EXCEPTION 'service_configuration_exit_pending' USING ERRCODE='55000';
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS service_configuration_exit_binding_guard ON public.rtt_service_identity_bindings;
+CREATE TRIGGER service_configuration_exit_binding_guard BEFORE INSERT OR UPDATE OR DELETE ON public.rtt_service_identity_bindings
+ FOR EACH ROW EXECUTE FUNCTION public.guard_configuration_exit_binding();
+
+CREATE OR REPLACE FUNCTION public.guard_configuration_exit_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE previous_candidate jsonb; next_candidate jsonb; lock_name text;
+BEGIN
+ IF TG_OP='UPDATE' AND NEW.active=false THEN RETURN NEW; END IF;
+ IF TG_OP<>'INSERT' THEN previous_candidate:=OLD.candidate; END IF;
+ IF TG_OP<>'DELETE' THEN next_candidate:=NEW.candidate; END IF;
+ FOR lock_name IN SELECT DISTINCT n FROM unnest(ARRAY[
+  (previous_candidate->>'rttNode') || ':' || (previous_candidate->>'logicalInstanceId'),
+  (next_candidate->>'rttNode') || ':' || (next_candidate->>'logicalInstanceId')]) AS n WHERE n IS NOT NULL ORDER BY n LOOP
+  PERFORM pg_advisory_xact_lock(hashtextextended('configuration-exit:logical:' || lock_name,0));
+ END LOOP;
+ IF EXISTS(SELECT 1 FROM public.service_configuration_exit e WHERE e.active
+  AND ((e.rtt_node=previous_candidate->>'rttNode' AND e.logical_instance_id=previous_candidate->>'logicalInstanceId')
+   OR (e.rtt_node=next_candidate->>'rttNode' AND e.logical_instance_id=next_candidate->>'logicalInstanceId'))
+  AND e.operation_id::text IS DISTINCT FROM current_setting('openhub.configuration_save',true)) THEN
+  RAISE EXCEPTION 'service_configuration_exit_pending' USING ERRCODE='55000';
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS service_configuration_exit_publication_guard ON public.catalog_publication_grants;
+CREATE TRIGGER service_configuration_exit_publication_guard BEFORE INSERT OR UPDATE OR DELETE ON public.catalog_publication_grants
+ FOR EACH ROW EXECUTE FUNCTION public.guard_configuration_exit_publication();
