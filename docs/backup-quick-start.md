@@ -5,6 +5,47 @@ RTT microservice deployment files, signed cluster configuration, and recovery
 metadata. QuestDB history and other service-owned datasets require their own
 database backup policy.
 
+## Portable backups for a single Controller
+
+An administrator can open **Recovery → Portable backups** and select **Create backup**.
+To automate the same capture, enable **Daily backup**, choose a time and time zone,
+and select **Save schedule**. A restart after the scheduled time catches up once for
+that local date. Each completed archive is a single `openhub-*.zip` in the host
+directory bound to `/var/lib/uns-backups` (`UNS_BACKUP_DIR`). It can be copied to
+tape and later returned to the same mount with its original filename. Access to
+the ZIP grants access to the database dump and configurations, so use a private
+folder and trusted copies. Restrict filesystem write access to the owner.
+
+**Restore one service on a running Controller.** Put the archive in the target
+backup folder, select **Refresh archives**, expand the file and choose
+**Restore instance…** next to the desired service. Confirm the restore, review
+the stopped configuration and start the instance from **Micro services**.
+The selection restores the service configuration and saved configuration versions.
+The target keeps its database and running instances. A conflicting instance ID
+or process name blocks the import. Catalog packages require access to their
+matching immutable release. Archived Node packages require access to the
+dependencies pinned in their pnpm lockfile.
+
+**Restore the full control plane.** Install a fresh single-controller Runtime
+with the Controller version recorded in the archive and the same PostgreSQL
+major version. Start its infrastructure and keep its Controller stopped.
+From the installed Runtime directory, pass the ZIP's basename:
+
+```sh
+./scripts/restore-portable-backup.sh openhub-<archive-id>.zip
+```
+
+After a successful command, start the Controller normally. The command restores
+PostgreSQL and the local services, generates new signing identities and keeps the
+target installation's network and database connection settings. If the initial
+database already has tables, it restores into a new database on that server.
+After a file publication failure, fix the reported target mount and repeat the
+command with the same archive before starting the Controller.
+
+This format covers independent local Node/pnpm microservices. It omits
+`node_modules`, pending queues and QuestDB history. External secret providers
+must still be reachable with the target installation's credentials.
+
 ## What runs where
 
 | Component | Responsibility | Recommended time |
