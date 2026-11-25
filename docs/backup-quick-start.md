@@ -46,6 +46,12 @@ This format covers independent local Node/pnpm microservices. It omits
 `node_modules`, pending queues and QuestDB history. External secret providers
 must still be reachable with the target installation's credentials.
 
+## Mounted retention policy
+
+In Recovery, expand **Retention policy**, enter the minimum local age, number of newer groups to keep and maximum age of external backup evidence, then save. Check the acknowledgement from each controller. The resulting `recovery-policy.json` lives directly in each bound backup directory and can be included in external backups. Only these numeric rules and the format version travel with the archives. A fresh restore works without this file.
+
+The optional host timer reads the mounted policy on each run. Its installation chooses the provider executable and plan or apply mode. External provider credentials remain with the provider. For an upgrade, save the rules and install the updated unit in plan mode. Review a fresh plan before retiring the old environment file or enabling automatic removal.
+
 ## What runs where
 
 | Component | Responsibility | Recommended time |

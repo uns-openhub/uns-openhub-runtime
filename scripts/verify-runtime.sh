@@ -151,7 +151,7 @@ done
   echo "Missing recovery retention systemd timer" >&2
   exit 1
 }
-[[ -s recovery-retention.env.example ]] || {
+[[ -s recovery-policy.json.example ]] || {
   echo "Missing recovery retention environment example" >&2
   exit 1
 }

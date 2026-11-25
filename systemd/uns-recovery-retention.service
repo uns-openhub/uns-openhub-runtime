@@ -2,19 +2,12 @@
 Description=UNS OpenHub verified local recovery retention
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/etc/uns/recovery-retention.env
+ConditionPathExists=@BACKUP_ROOT@/recovery-policy.json
 
 [Service]
 Type=oneshot
 User=root
-EnvironmentFile=/etc/uns/recovery-retention.env
-ExecStart=/usr/bin/env ${UNS_RUNTIME_DIR}/bin/uns environment backup retention-run \
-  --mode ${UNS_RETENTION_MODE} \
-  --root ${UNS_BACKUP_ROOT} \
-  --minimum-age-days ${UNS_RETENTION_MINIMUM_AGE_DAYS} \
-  --keep-latest ${UNS_RETENTION_KEEP_LATEST} \
-  --max-filespace-age-hours ${UNS_TSM_MAX_FILESPACE_AGE_HOURS} \
-  --dsmc ${UNS_TSM_DSMC}
+ExecStart=@RUNTIME_DIR@/bin/uns environment backup retention-run --mounted-policy --mode @MODE@ --root @BACKUP_ROOT@ --dsmc @DSMC@
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
